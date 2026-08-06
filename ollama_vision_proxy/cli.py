@@ -23,7 +23,12 @@ from .preflight import (
     vision_model_status,
 )
 from .proxy import DEFAULT_PROXY_PORT, DEFAULT_UPSTREAM_URL, ProxyServer
-from .vision import DEFAULT_TIMEOUT, DEFAULT_VISION_MODEL, VisionTranscriber
+from .vision import (
+    DEFAULT_NUM_CTX,
+    DEFAULT_TIMEOUT,
+    DEFAULT_VISION_MODEL,
+    VisionTranscriber,
+)
 
 logger = logging.getLogger("ovp")
 
@@ -88,6 +93,14 @@ def _add_launch_arguments(launch: argparse.ArgumentParser) -> None:
         help="pull a missing vision model without asking",
     )
     launch.add_argument(
+        "--vision-context",
+        type=int,
+        default=DEFAULT_NUM_CTX,
+        help="context window for the vision model (default: "
+        f"{DEFAULT_NUM_CTX}). Set explicitly so a large OLLAMA_CONTEXT_LENGTH on "
+        "the host cannot reserve tens of GB of KV cache per image",
+    )
+    launch.add_argument(
         "--geocode-url",
         default=NOMINATIM_URL,
         help="reverse geocoding endpoint used to name a photo's location "
@@ -142,6 +155,7 @@ def _launch(args: argparse.Namespace, claude_args: List[str]) -> int:
         model=args.vision_model,
         upstream_url=args.upstream_url,
         timeout=args.vision_timeout,
+        num_ctx=args.vision_context,
         geocoder=ReverseGeocoder(url=args.geocode_url, enabled=not args.no_geocode),
     )
     proxy = ProxyServer(

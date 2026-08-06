@@ -39,11 +39,17 @@ DEFAULT_VISION_MODEL = "gemma3:4b"
 #: Generous, because a cold vision model has to load before it can answer.
 DEFAULT_TIMEOUT = 180.0
 
-#: Greedy decoding: this is a reporting task, not a creative one.
-DEFAULT_OPTIONS: Dict[str, Any] = {"temperature": 0}
+#: Describing one image needs a few thousand tokens, so the context must be set
+#: explicitly. Without it the server default applies, and a host configured with
+#: OLLAMA_CONTEXT_LENGTH=262144 made a 1.9 GB model reserve 32 GB of KV cache on
+#: a 39 GB machine: it evicted every other model, swapped, and ran twice as slow
+#: for byte-identical output.
+DEFAULT_NUM_CTX = 8192
 
-#: The classifier only has to emit one word.
-CLASSIFY_OPTIONS: Dict[str, Any] = {"temperature": 0, "num_predict": 8}
+
+def _options(num_ctx: int, **extra: Any) -> Dict[str, Any]:
+    """Greedy decoding, with the context pinned to what the task needs."""
+    return {"temperature": 0, "num_ctx": num_ctx, **extra}
 
 
 class VisionError(Exception):
@@ -72,6 +78,7 @@ class VisionTranscriber:
         cache: Optional[TranscriptionCache] = None,
         geocoder: Optional[ReverseGeocoder] = None,
         classify: bool = True,
+        num_ctx: int = DEFAULT_NUM_CTX,
     ) -> None:
         self.model = model
         self.upstream_url = upstream_url.rstrip("/")
@@ -79,6 +86,7 @@ class VisionTranscriber:
         #: When set, overrides the per-kind prompt entirely.
         self.prompt = prompt
         self.classify = classify
+        self.num_ctx = num_ctx
         self.cache = cache if cache is not None else TranscriptionCache()
         self.geocoder = geocoder
         self._owns_client = client is None
@@ -113,7 +121,9 @@ class VisionTranscriber:
         if not self.classify or self.prompt is not None:
             return ImageKind.OTHER
         try:
-            reply = self._chat(classify_prompt(), block, CLASSIFY_OPTIONS)
+            reply = self._chat(
+                classify_prompt(), block, _options(self.num_ctx, num_predict=8)
+            )
         except Exception as exc:  # noqa: BLE001
             logger.debug("classification failed, using the generic prompt: %s", exc)
             return ImageKind.OTHER
@@ -123,7 +133,7 @@ class VisionTranscriber:
 
     def _describe(self, block: ImageBlock, kind: ImageKind) -> str:
         prompt = self.prompt if self.prompt is not None else describe_prompt(kind)
-        return self._chat(prompt, block, DEFAULT_OPTIONS)
+        return self._chat(prompt, block, _options(self.num_ctx))
 
     def _metadata(self, block: ImageBlock) -> Optional[str]:
         """Best effort: metadata is a bonus, never a reason to fail."""

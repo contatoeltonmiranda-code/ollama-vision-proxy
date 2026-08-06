@@ -118,6 +118,7 @@ The same commands work verbatim in PowerShell.
 | `--proxy-port` | `11435` | Port the proxy listens on. |
 | `--upstream-url` | `http://127.0.0.1:11434` | The Ollama server to forward to. |
 | `--vision-timeout` | `180` | Seconds to wait for one transcription. |
+| `--vision-context` | `8192` | Context window for the vision model. Pinned so a large `OLLAMA_CONTEXT_LENGTH` cannot reserve tens of GB per image. |
 | `-y`, `--yes` | off | Pull a missing vision model without asking. |
 | `--geocode-url` | Nominatim | Reverse geocoding endpoint used to name a photo's location. |
 | `--no-geocode` | off | Skip the address lookup; coordinates are still reported. |
@@ -140,6 +141,8 @@ Two vision calls, because one generic prompt served every image badly. It padded
 
 1. **Classify.** One short call asks what kind of image this is: screenshot, document, diagram, photo, or other.
 2. **Describe.** A second call uses the prompt that kind deserves. A screenshot gets verbatim text, application names, and any error or stack trace reported in full. A photograph gets its subjects in detail first, then the background. A diagram gets every label plus the structure connecting them.
+
+Both calls pin the context window with `num_ctx` (default 8192, see `--vision-context`). This matters more than it sounds: on a host running `ollama serve` with `OLLAMA_CONTEXT_LENGTH=262144`, a 1.9 GB model reserved **32 GB** of KV cache for a single image. Pinning the context cut that to 2.5 GB and halved the latency, for byte-identical output. Without it, one pasted image can evict every other model on the machine.
 
 Both calls run at `temperature 0`. The models ship at temperature 1, which made transcription a lottery: the same image produced different text run to run, and one run declared an image had no text when it plainly did. Every prompt also forbids inventing proper nouns that are not written in the image.
 

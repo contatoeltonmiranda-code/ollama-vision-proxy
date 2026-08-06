@@ -443,3 +443,61 @@ class TestMetadataAttachment:
         assert "<metadata>" in text
         # Trusted proxy data must sit after the untrusted description wrapper.
         assert text.index(TRANSCRIPTION_CLOSE) < text.index("<metadata>")
+
+
+class TestContextWindow:
+    """A host with a large OLLAMA_CONTEXT_LENGTH made a 1.9GB model reserve
+    32GB of KV cache, so the context has to be pinned per request."""
+
+    def _capture(self):
+        seen = []
+
+        def handler(request):
+            seen.append(json.loads(request.content))
+            body = seen[-1]
+            if "Classify this image" in body["messages"][0]["content"]:
+                return httpx.Response(200, json={"message": {"content": "PHOTO"}})
+            return httpx.Response(200, json={"message": {"content": "described"}})
+
+        return handler, seen
+
+    def test_num_ctx_is_always_sent(self):
+        handler, seen = self._capture()
+        _transcriber(handler)(_block())
+        assert seen, "no request captured"
+        for body in seen:
+            assert "num_ctx" in body["options"]
+
+    def test_default_context_is_modest(self):
+        from ollama_vision_proxy.vision import DEFAULT_NUM_CTX
+
+        handler, seen = self._capture()
+        _transcriber(handler)(_block())
+        assert DEFAULT_NUM_CTX <= 32768, "a huge default defeats the purpose"
+        for body in seen:
+            assert body["options"]["num_ctx"] == DEFAULT_NUM_CTX
+
+    def test_num_ctx_is_configurable(self):
+        handler, seen = self._capture()
+        _transcriber(handler, num_ctx=4096)(_block())
+        for body in seen:
+            assert body["options"]["num_ctx"] == 4096
+
+    def test_classification_and_description_both_pinned(self):
+        handler, seen = self._capture()
+        _transcriber(handler, num_ctx=2048)(_block())
+        assert len(seen) == 2
+        assert seen[0]["options"]["num_ctx"] == 2048
+        assert seen[1]["options"]["num_ctx"] == 2048
+
+    def test_classification_still_caps_output_length(self):
+        handler, seen = self._capture()
+        _transcriber(handler)(_block())
+        assert seen[0]["options"]["num_predict"] <= 16
+        assert "num_predict" not in seen[1]["options"]
+
+    def test_greedy_sampling_survives_the_context_change(self):
+        handler, seen = self._capture()
+        _transcriber(handler, num_ctx=1024)(_block())
+        for body in seen:
+            assert body["options"]["temperature"] == 0
