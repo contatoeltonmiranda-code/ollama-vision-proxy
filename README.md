@@ -76,11 +76,31 @@ ollama pull gemma3:4b
 
 Other options:
 
-| Model | Size | Notes |
-|---|---|---|
-| `gemma3:4b` | ~3.3 GB | Default. Solid all-round description. |
-| `minicpm-v` | ~5.5 GB | Stronger OCR. Prefer it when your images are mostly screenshots of text, logs, or code. |
-| `qwen3.5:4b-mlx` | ~4.0 GB | Vision plus thinking and tools. |
+| Model | Size | Measured | Notes |
+|---|---|---|---|
+| `gemma3:4b` | 3.3 GB | 20.8s, 5/7 OCR | **Default.** Does not deliberate, so latency is predictable. |
+| `qwen3-vl:4b` | 3.3 GB | 202s, 6/7 OCR | Better OCR, but see the warning below. Needs `--vision-timeout 240`. |
+| `qwen3-vl:8b` | 6.1 GB | 103s, 7/7 OCR | Best accuracy measured. Same deliberation problem. |
+| `minicpm-v` | ~5.5 GB | not measured | Recommended elsewhere for OCR; untested here. |
+
+Numbers are from four images with human-verified ground truth, one model resident at a time. OCR is exact-substring recall on strings visibly present in the images.
+
+### Why the most accurate model is not the default
+
+`qwen3-vl` reads text better than `gemma3:4b`. On a real terminal screenshot it scored 6/6 and transcribed the whole menu bar, where `gemma3:4b` scored 5/6 and skipped it. It is also the *faster generator* of the two, around 36 tokens/s against 23.
+
+It is still not the default, because it is a thinking model and it cannot be told to stop. Describing one screenshot cost 4114 output tokens and 202s, of which 15,759 characters were deliberation supporting a 552-character answer. Attempts to suppress it:
+
+- `"think": false` in the request: ignored, it deliberated anyway.
+- An explicit "do not deliberate, answer immediately" instruction at the top of the prompt: 46% fewer tokens (4114 to 2214) and 135s. Still far past a usable interactive budget, and the same instruction at the *end* of the prompt timed out entirely.
+
+So it is offered, not defaulted:
+
+```bash
+ovp launch --target-model glm-5.2:cloud --vision-model qwen3-vl:4b --vision-timeout 240
+```
+
+Worth knowing if you revisit this: on the *generic* prompt it managed 6/6 in 30.6s. The specialised screenshot prompt is what provokes the deliberation, so a Modelfile copy with a template that strips thinking is the untried avenue most likely to give its accuracy at a usable speed.
 
 Any model Ollama reports a `vision` capability for will work:
 
