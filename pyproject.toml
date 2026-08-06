@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ollama-vision-proxy"
+version = "0.1.0"
+description = "Give text-only Ollama models image support by transcribing images with a local vision model before forwarding"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Paulo Junior" }]
+keywords = ["ollama", "anthropic", "claude-code", "vision", "proxy"]
+
+dependencies = [
+    "httpx>=0.24",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+ovp = "ollama_vision_proxy.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ollama_vision_proxy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["."]
