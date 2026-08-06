@@ -90,3 +90,33 @@ class TestDescribePrompts:
     def test_unknown_kind_falls_back_to_the_generic_prompt(self):
         assert describe_prompt(ImageKind.OTHER) == describe_prompt(ImageKind.OTHER)
         assert "describe this image" in describe_prompt(ImageKind.OTHER).lower()
+
+
+class TestThinkingReplies:
+    """Thinking models reason out loud and usually restate the menu on the way,
+    so the conclusion is the last keyword, not the first."""
+
+    def test_enumeration_then_conclusion_takes_the_conclusion(self):
+        reply = (
+            "Got it, let's see. The options are SCREENSHOT, DOCUMENT, DIAGRAM, "
+            "PHOTO, OTHER. This is a picture of a car on a street, so PHOTO."
+        )
+        assert parse_kind(reply) is ImageKind.PHOTO
+
+    def test_real_observed_thinking_text(self):
+        """Verbatim from qwen3-vl:4b on an iTerm2 screenshot."""
+        reply = (
+            "Got it, let's see. The image is showing an iTerm2 terminal window "
+            "with text output. So it's a computer interface, specifically a "
+            "terminal. The options are SCREENSHOT, DOCUMENT, etc. Since it's a "
+            "screenshot of a terminal, the category should be SCREENSHOT"
+        )
+        assert parse_kind(reply) is ImageKind.SCREENSHOT
+
+    def test_reasoning_that_rejects_one_option_then_picks_another(self):
+        reply = "It is not a DIAGRAM. It is a photograph, so the answer is PHOTO."
+        assert parse_kind(reply) is ImageKind.PHOTO
+
+    def test_a_bare_answer_is_unaffected(self):
+        assert parse_kind("SCREENSHOT") is ImageKind.SCREENSHOT
+        assert parse_kind("PHOTO") is ImageKind.PHOTO

@@ -204,8 +204,10 @@ class TestPreflightFailures:
         pulled = []
         monkeypatch.setattr(cli, "pull_model", lambda model: (pulled.append(model), 0)[1])
         monkeypatch.setattr(cli, "check_vision_model", lambda *a, **k: None)
+        from ollama_vision_proxy.vision import DEFAULT_VISION_MODEL
+
         assert cli.main(["launch", "--target-model", "m", "-y"]) == 0
-        assert pulled == ["gemma3:4b"]
+        assert pulled == [DEFAULT_VISION_MODEL]
 
     def test_failed_pull_exits_two(self, wired, monkeypatch):
         monkeypatch.setattr(

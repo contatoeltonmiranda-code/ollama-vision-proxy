@@ -92,18 +92,23 @@ def describe_prompt(kind: ImageKind) -> str:
 def parse_kind(reply: str) -> ImageKind:
     """Map a classifier reply onto a kind, defaulting to OTHER.
 
-    Models add stray punctuation, casing, and the occasional sentence, so match
-    on the first recognised keyword rather than demanding an exact answer.
+    Takes the LAST keyword mentioned, not the first. A thinking model reasons out
+    loud before answering and typically restates the menu on the way ("the
+    options are SCREENSHOT, DOCUMENT, ... so this is a PHOTO"), so the first
+    match is often just the list while the last one is the conclusion.
     """
     if not reply:
         return ImageKind.OTHER
-    text = reply.strip().upper()
+    text = reply.upper()
+    best_kind = ImageKind.OTHER
+    best_index = -1
     for kind in (
         ImageKind.SCREENSHOT,
         ImageKind.DOCUMENT,
         ImageKind.DIAGRAM,
         ImageKind.PHOTO,
     ):
-        if kind.value.upper() in text:
-            return kind
-    return ImageKind.OTHER
+        index = text.rfind(kind.value.upper())
+        if index > best_index:
+            best_index, best_kind = index, kind
+    return best_kind

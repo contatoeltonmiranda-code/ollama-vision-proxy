@@ -34,10 +34,32 @@ from .transform import ImageBlock
 
 logger = logging.getLogger(__name__)
 
+#: qwen3-vl:4b has better OCR (6/7 vs 5/7 on the benchmark, and 6/6 vs 5/6 on a
+#: real terminal screenshot), and it was approved as the default. It is NOT the
+#: default, because measuring the fixed pipeline end to end contradicted the
+#: premise of that approval:
+#:
+#:   gemma3:4b      describe   20.8s     478 chars, no thinking
+#:   qwen3-vl:4b    describe  202.2s     552 chars, 15759 chars of thinking
+#:
+#: The benchmark had flattered it. Its classifier was returning an empty string,
+#: so every image fell back to the light generic prompt. Repairing the classifier
+#: routed screenshots to the demanding screenshot prompt, which sends a thinking
+#: model into 4000 tokens of deliberation for a 552-character answer. With the
+#: 60s backstop that means screenshots always time out, so this default would be
+#: broken for the exact case it was chosen to improve.
+#:
+#: Worth noting for whoever revisits this: qwen3-vl:4b on the GENERIC prompt was
+#: 6/6 at 30.6s, which beats gemma3:4b on both counts. Not specialising the
+#: prompt for thinking models looks like the fix, but it needs measuring.
 DEFAULT_VISION_MODEL = "gemma3:4b"
 
-#: Generous, because a cold vision model has to load before it can answer.
-DEFAULT_TIMEOUT = 180.0
+#: A backstop, not a budget. Thinking models are erratic: the same describe call
+#: measured 30.6s once and 248.8s another time, and a slow transcription blocks
+#: the request it belongs to. Exceeding this is fail-soft, so the block becomes a
+#: placeholder rather than an error. Raise it with --vision-timeout if a large
+#: model on a cold load needs longer.
+DEFAULT_TIMEOUT = 60.0
 
 #: Describing one image needs a few thousand tokens, so the context must be set
 #: explicitly. Without it the server default applies, and a host configured with
@@ -45,6 +67,12 @@ DEFAULT_TIMEOUT = 180.0
 #: a 39 GB machine: it evicted every other model, swapped, and ran twice as slow
 #: for byte-identical output.
 DEFAULT_NUM_CTX = 8192
+
+
+#: Enough for a thinking model to reason and then state its answer. Capped at 8
+#: it emitted nothing at all: every token went into the reasoning and the reply
+#: was truncated before the model ever committed to a category.
+CLASSIFY_MAX_TOKENS = 512
 
 
 def _options(num_ctx: int, **extra: Any) -> Dict[str, Any]:
@@ -122,7 +150,7 @@ class VisionTranscriber:
             return ImageKind.OTHER
         try:
             reply = self._chat(
-                classify_prompt(), block, _options(self.num_ctx, num_predict=8)
+                classify_prompt(), block, _options(self.num_ctx, num_predict=CLASSIFY_MAX_TOKENS)
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug("classification failed, using the generic prompt: %s", exc)
@@ -170,10 +198,10 @@ class VisionTranscriber:
 
         data = response.json()
         message = data.get("message") if isinstance(data, dict) else None
-        content = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(content, str) or not content.strip():
+        reply = _reply_text(message)
+        if not reply:
             raise VisionError("the vision model returned no description")
-        return content.strip()
+        return reply
 
     def close(self) -> None:
         if self._owns_client:
@@ -186,6 +214,25 @@ class VisionTranscriber:
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
+
+
+def _reply_text(message: Any) -> str:
+    """The model's answer, from `content` or else from `thinking`.
+
+    Thinking models put their reasoning in a separate `thinking` field and can
+    leave `content` empty, which read as "no description" and lost an answer that
+    had in fact been produced.
+    """
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str) and content.strip():
+        return content.strip()
+    thinking = message.get("thinking")
+    if isinstance(thinking, str) and thinking.strip():
+        logger.debug("model left content empty; falling back to its thinking")
+        return thinking.strip()
+    return ""
 
 
 def _failure(reason: str) -> str:

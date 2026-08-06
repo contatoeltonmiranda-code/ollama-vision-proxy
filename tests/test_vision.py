@@ -323,10 +323,15 @@ class TestTwoStepPipeline:
         for body in seen:
             assert body["options"]["temperature"] == 0
 
-    def test_classification_is_capped_in_length(self):
+    def test_classification_output_is_bounded(self):
+        """Bounded so a rambling model cannot run away, but generous enough that
+        a thinking model can reason and still reach its answer."""
+        from ollama_vision_proxy.vision import CLASSIFY_MAX_TOKENS
+
         handler, seen = self._recording_handler()
         _transcriber(handler)(_block())
-        assert seen[0]["options"]["num_predict"] <= 16
+        assert seen[0]["options"]["num_predict"] == CLASSIFY_MAX_TOKENS
+        assert 128 <= CLASSIFY_MAX_TOKENS <= 1024
 
     def test_pipeline_is_cached_as_a_whole(self):
         handler, seen = self._recording_handler()
@@ -490,10 +495,10 @@ class TestContextWindow:
         assert seen[0]["options"]["num_ctx"] == 2048
         assert seen[1]["options"]["num_ctx"] == 2048
 
-    def test_classification_still_caps_output_length(self):
+    def test_only_classification_bounds_output_length(self):
         handler, seen = self._capture()
         _transcriber(handler)(_block())
-        assert seen[0]["options"]["num_predict"] <= 16
+        assert "num_predict" in seen[0]["options"]
         assert "num_predict" not in seen[1]["options"]
 
     def test_greedy_sampling_survives_the_context_change(self):
@@ -501,3 +506,82 @@ class TestContextWindow:
         _transcriber(handler, num_ctx=1024)(_block())
         for body in seen:
             assert body["options"]["temperature"] == 0
+
+
+class TestThinkingModels:
+    """qwen3-vl leaves message.content empty and puts the answer in thinking."""
+
+    def test_thinking_is_used_when_content_is_empty(self):
+        def handler(request):
+            return httpx.Response(
+                200,
+                json={"message": {"content": "", "thinking": "a red bicycle"}},
+            )
+
+        result = _transcriber(handler, classify=False)(_block())
+        assert result.description == "a red bicycle"
+
+    def test_content_wins_when_both_are_present(self):
+        def handler(request):
+            return httpx.Response(
+                200,
+                json={"message": {"content": "the answer", "thinking": "musing"}},
+            )
+
+        result = _transcriber(handler, classify=False)(_block())
+        assert result.description == "the answer"
+
+    def test_both_empty_is_still_a_failure(self):
+        def handler(request):
+            return httpx.Response(200, json={"message": {"content": "", "thinking": ""}})
+
+        result = _transcriber(handler, classify=False)(_block())
+        assert "transcription failed" in result.description
+
+    def test_classification_reads_a_thinking_reply(self):
+        def handler(request):
+            body = json.loads(request.content)
+            if "Classify this image" in body["messages"][0]["content"]:
+                return httpx.Response(
+                    200,
+                    json={
+                        "message": {
+                            "content": "",
+                            "thinking": "options are SCREENSHOT, PHOTO; this is a PHOTO",
+                        }
+                    },
+                )
+            return httpx.Response(200, json={"message": {"content": "described"}})
+
+        result = _transcriber(handler)(_block())
+        assert result.kind is ImageKind.PHOTO
+
+    def test_classification_gets_room_to_think(self):
+        """Capped at 8 tokens the model emitted nothing at all."""
+        from ollama_vision_proxy.vision import CLASSIFY_MAX_TOKENS
+
+        seen = []
+
+        def handler(request):
+            seen.append(json.loads(request.content))
+            return httpx.Response(200, json={"message": {"content": "PHOTO"}})
+
+        _transcriber(handler)(_block())
+        assert seen[0]["options"]["num_predict"] == CLASSIFY_MAX_TOKENS
+        assert CLASSIFY_MAX_TOKENS >= 128
+
+
+class TestDefaults:
+    def test_default_model_is_one_that_finishes_in_time(self):
+        """qwen3-vl:4b has better OCR but spends 202s deliberating on the
+        screenshot prompt, so it always trips the 60s backstop."""
+        from ollama_vision_proxy.vision import DEFAULT_TIMEOUT, DEFAULT_VISION_MODEL
+
+        assert DEFAULT_VISION_MODEL == "gemma3:4b"
+        # Guard the pairing: a default must be able to answer inside the backstop.
+        assert DEFAULT_TIMEOUT >= 30.0
+
+    def test_default_timeout_backstops_erratic_latency(self):
+        from ollama_vision_proxy.vision import DEFAULT_TIMEOUT
+
+        assert DEFAULT_TIMEOUT == 60.0
