@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
@@ -47,6 +48,30 @@ HOP_BY_HOP = frozenset(
 #: Read timeout is disabled: a streamed completion can legitimately take minutes.
 UPSTREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=60.0, pool=60.0)
 
+#: A client vanishing is routine, not an error. ConnectionError covers
+#: ConnectionResetError, BrokenPipeError, and the ConnectionAbortedError that
+#: Windows raises for the same situation.
+DISCONNECT_ERRORS = (ConnectionError, TimeoutError)
+
+
+class _QuietThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer that does not dump tracebacks to stderr.
+
+    The default `handle_error` prints a bare traceback, and with several
+    connections dropping at once the threads interleave their output and wreck
+    the terminal that Claude Code is drawing its interface in.
+    """
+
+    daemon_threads = True
+
+    def handle_error(self, request, client_address) -> None:
+        error = sys.exc_info()[1]
+        if isinstance(error, DISCONNECT_ERRORS):
+            logger.debug("client %s went away: %s", client_address, error)
+            return
+        # One atomic logging call, so concurrent threads cannot interleave.
+        logger.exception("error while handling a request from %s", client_address)
+
 
 class ProxyServer:
     """A threaded HTTP proxy. `port=0` binds an ephemeral port."""
@@ -73,8 +98,7 @@ class ProxyServer:
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> "ProxyServer":
-        httpd = ThreadingHTTPServer((self.host, self._requested_port), _Handler)
-        httpd.daemon_threads = True
+        httpd = _QuietThreadingHTTPServer((self.host, self._requested_port), _Handler)
         httpd.proxy = self  # type: ignore[attr-defined]
         self._httpd = httpd
         self._thread = threading.Thread(
@@ -123,6 +147,20 @@ class _Handler(BaseHTTPRequestHandler):
     # BaseHTTPRequestHandler writes to stderr by default; route through logging.
     def log_message(self, fmt: str, *args: object) -> None:
         logger.debug("%s - %s", self.address_string(), fmt % args)
+
+    def handle(self) -> None:
+        """Serve the keep-alive request loop, tolerating a vanishing client.
+
+        The stdlib only catches TimeoutError around the read of the next request
+        line, so an abortive close (RST) on an idle pooled connection escapes as
+        ConnectionResetError. The same applies to the flush the stdlib performs
+        after a handler returns, which is outside our own write guards.
+        """
+        try:
+            super().handle()
+        except DISCONNECT_ERRORS as exc:
+            logger.debug("client connection dropped: %s", exc)
+            self.close_connection = True
 
     def do_GET(self) -> None:
         self._proxy()

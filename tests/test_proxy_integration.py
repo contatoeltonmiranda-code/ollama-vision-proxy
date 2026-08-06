@@ -1,6 +1,9 @@
 """End-to-end proxy tests against a fake upstream Ollama server."""
 
 import json
+import socket
+import struct
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,6 +20,25 @@ SSE_EVENTS = [
 ]
 
 
+class _QuietTestServer(ThreadingHTTPServer):
+    """Fake upstream must not print tracebacks of its own.
+
+    When the real client hangs up, the proxy correctly drops its upstream
+    connection, which makes this fake server hit ConnectionResetError on its own
+    idle keep-alive read. The default handler would dump that to stderr and mask
+    what we are actually asserting, which is that the *proxy* stays silent.
+    Unexpected errors are still recorded so nothing is hidden.
+    """
+
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        error = sys.exc_info()[1]
+        if isinstance(error, (ConnectionError, TimeoutError)):
+            return
+        self.unexpected_errors.append(error)  # type: ignore[attr-defined]
+
+
 class FakeUpstream:
     """Records what the proxy forwarded and replays a scripted response."""
 
@@ -25,6 +47,7 @@ class FakeUpstream:
         self.mode = "json"
         self.status = 200
         self.slow_gap = 0.0
+        self.unexpected_errors = []
         self._server = None
         self._thread = None
 
@@ -85,8 +108,8 @@ class FakeUpstream:
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
 
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self._server.daemon_threads = True
+        self._server = _QuietTestServer(("127.0.0.1", 0), Handler)
+        self._server.unexpected_errors = self.unexpected_errors
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         return self
@@ -323,6 +346,71 @@ class TestRobustness:
         for thread in threads:
             thread.join(timeout=20)
         assert results == [200] * 8
+
+
+class TestClientDisconnects:
+    """Claude Code pools keep-alive connections and tears them down with a TCP
+    RST. The stdlib only catches TimeoutError while reading the next request
+    line, so an uncaught ConnectionResetError reaches socketserver.handle_error,
+    which dumps a traceback to stderr and corrupts the terminal Claude Code is
+    drawing in."""
+
+    def _reset_after_request(self, proxy, count=3):
+        for _ in range(count):
+            sock = socket.create_connection(("127.0.0.1", proxy.port))
+            sock.sendall(
+                b"GET /api/version HTTP/1.1\r\nHost: x\r\n"
+                b"Connection: keep-alive\r\n\r\n"
+            )
+            sock.recv(4096)
+            # SO_LINGER with timeout 0 forces an abortive close (RST, not FIN),
+            # while the server thread is blocked reading the next request.
+            sock.setsockopt(
+                socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+            )
+            sock.close()
+        time.sleep(0.8)
+
+    def test_keepalive_reset_prints_nothing_to_stderr(self, proxy, capsys):
+        self._reset_after_request(proxy)
+        captured = capsys.readouterr()
+        assert "Traceback" not in captured.err
+        assert "ConnectionResetError" not in captured.err
+        assert "Exception occurred during processing" not in captured.err
+
+    def test_proxy_still_serves_after_a_reset(self, proxy):
+        self._reset_after_request(proxy)
+        response = httpx.get(f"{proxy.url}/api/version", timeout=10)
+        assert response.status_code == 200
+
+    def test_client_hangup_mid_request_is_silent(self, proxy, capsys):
+        """Disconnecting after sending only a partial request line."""
+        for _ in range(3):
+            sock = socket.create_connection(("127.0.0.1", proxy.port))
+            sock.sendall(b"POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Len")
+            sock.setsockopt(
+                socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+            )
+            sock.close()
+        time.sleep(0.8)
+        captured = capsys.readouterr()
+        assert "Traceback" not in captured.err
+        assert "Exception occurred during processing" not in captured.err
+
+    def test_client_disconnects_while_streaming(self, proxy, upstream, capsys):
+        """Hanging up mid-SSE must not raise on the write side either."""
+        upstream.mode = "sse"
+        upstream.slow_gap = 0.4
+        with httpx.stream(
+            "POST", f"{proxy.url}/v1/messages", json=_image_request(stream=True), timeout=15
+        ) as response:
+            next(response.iter_raw())  # take one chunk, then abandon the stream
+        time.sleep(1.0)
+        captured = capsys.readouterr()
+        assert "Traceback" not in captured.err
+        assert "Exception occurred during processing" not in captured.err
+        # The quieted upstream must not be hiding a real failure.
+        assert upstream.unexpected_errors == []
 
 
 class TestLifecycle:
