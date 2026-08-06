@@ -396,7 +396,10 @@ class TestMetadataAttachment:
 
         block = _block(data=self._b64(self._jpeg_with_gps()))
         result = _transcriber(handler, classify=False, geocoder=FakeGeocoder())(block)
-        assert seen["coords"][0] > 43 and seen["coords"][1] < -80
+        # The coordinates the EXIF fixture encodes, not a magic threshold.
+        latitude, longitude = seen["coords"]
+        assert abs(latitude - 43.6425) < 1e-4
+        assert abs(longitude - (-79.387222)) < 1e-4
         assert "Toronto" in result.metadata
 
     def test_geocoder_failure_still_yields_coordinates(self):

@@ -4,7 +4,7 @@ import httpx
 
 from ollama_vision_proxy.geocode import Address, ReverseGeocoder
 
-# Shaped like a real Nominatim jsonv2 reply for the coordinates in the README.
+# Shaped like a real Nominatim jsonv2 reply for the README's example coordinates.
 TORONTO = {
     "display_name": "Bremner Boulevard, Entertainment District, Toronto, Ontario, M5V 2T6, Canada",
     "address": {
