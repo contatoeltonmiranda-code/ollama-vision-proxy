@@ -29,7 +29,7 @@ ovp proxy  127.0.0.1:11435
 Ollama server  127.0.0.1:11434  ->  Ollama Cloud (for :cloud models)
 ```
 
-Each image block becomes a text block reading `[Image: <description>]`. Everything else in the request is left exactly as it was, and the streamed response is relayed straight back to Claude Code chunk by chunk.
+Each image block becomes a text block holding the description inside an `<image-transcription>` wrapper, followed by a `<metadata>` block when the image carries a GPS fix. Everything else in the request is left exactly as it was, and the streamed response is relayed straight back to Claude Code chunk by chunk.
 
 ## Requirements
 
@@ -119,6 +119,8 @@ The same commands work verbatim in PowerShell.
 | `--upstream-url` | `http://127.0.0.1:11434` | The Ollama server to forward to. |
 | `--vision-timeout` | `180` | Seconds to wait for one transcription. |
 | `-y`, `--yes` | off | Pull a missing vision model without asking. |
+| `--geocode-url` | Nominatim | Reverse geocoding endpoint used to name a photo's location. |
+| `--no-geocode` | off | Skip the address lookup; coordinates are still reported. |
 | `--log-file` | none | Write full logs to this file instead of the terminal. |
 | `-v`, `--verbose` | off | Debug logging, kept on the terminal even during the session. |
 
@@ -126,11 +128,51 @@ The same commands work verbatim in PowerShell.
 
 Startup messages are printed before Claude Code takes over the screen, and the cache summary after it exits. In between, nothing is written to the terminal, because Claude Code is drawing its interface there and any stray line lands in the middle of it. Use `--log-file /tmp/ovp.log` to keep the full record, or `-v` when you would rather watch the traffic live and accept the mess.
 
-Failed transcriptions still reach you through the conversation itself, as `[Image: transcription failed (reason)]`, which is the right channel for it.
+Failed transcriptions still reach you through the conversation itself, as `transcription failed (reason)` in place of the description, which is the right channel for it.
 
 ### Why it does not wrap `ollama launch`
 
 `ollama launch claude` sets `ANTHROPIC_BASE_URL` to the Ollama port itself, which would undo the redirect. So `ovp` spawns `claude` directly and reproduces the same environment, with `ANTHROPIC_BASE_URL` pointing at the proxy and the same `OLLAMA_*` performance flags (`OLLAMA_FLASH_ATTENTION=1`, `OLLAMA_KEEP_ALIVE=-1`, `OLLAMA_KV_CACHE_TYPE=q8_0`, `OLLAMA_NUM_PARALLEL=1`).
+
+## How an image is processed
+
+Two vision calls, because one generic prompt served every image badly. It padded prose with preambles, and on a city skyline it confidently named the wrong buildings.
+
+1. **Classify.** One short call asks what kind of image this is: screenshot, document, diagram, photo, or other.
+2. **Describe.** A second call uses the prompt that kind deserves. A screenshot gets verbatim text, application names, and any error or stack trace reported in full. A photograph gets its subjects in detail first, then the background. A diagram gets every label plus the structure connecting them.
+
+Both calls run at `temperature 0`. The models ship at temperature 1, which made transcription a lottery: the same image produced different text run to run, and one run declared an image had no text when it plainly did. Every prompt also forbids inventing proper nouns that are not written in the image.
+
+If classification fails, the description still happens with the generic prompt.
+
+## The metadata block
+
+When an image carries a GPS fix, a `<metadata>` block follows the description:
+
+```
+<metadata>
+taken    2026-05-04 14:30:00 -04:00
+make     Apple
+device   iPhone
+lat      43.64250000 N
+long     79.38722222 W
+alt      76.50 m
+road     Bremner Boulevard
+zipcode  M5V 2T6
+suburb   Entertainment District
+state    Ontario
+city     Toronto
+country  Canada
+</metadata>
+```
+
+Images without a GPS fix, which includes every screenshot, get no block at all.
+
+The EXIF is read from the image bytes with nothing but the standard library. Claude Code re-encodes what you paste, so a 2.5 MB HEIC from a phone arrives as a much smaller JPEG, but the APP1 EXIF segment survives, which means no filesystem access and no extra dependency.
+
+The address comes from reverse geocoding, and it is the only part of this tool that talks to the internet. Only two rounded coordinates are sent, never the image, and results are cached so a photo sitting in conversation history does not re-query every turn. Use `--no-geocode` to keep the coordinates but skip the lookup, or `--geocode-url` to point at your own Nominatim instance. If the lookup fails the coordinates are still reported.
+
+The block sits **outside** the `<image-transcription>` wrapper on purpose. Inside it, the model is told to disregard what it reads; these are the proxy's own facts, not the vision model's output. Values are sanitised, since EXIF strings and geocoder replies are attacker-influenced.
 
 ## Behaviour worth knowing
 
@@ -160,7 +202,7 @@ uv pip install -e ".[dev]"
 .venv/bin/python -m pytest
 ```
 
-118 tests cover image detection and replacement (including nested `tool_result` images), cache and single-flight behaviour, fail-soft transcription, the launcher environment and argument passthrough, and full proxy round trips against a fake upstream, streaming included.
+257 tests cover EXIF parsing (including truncated and hostile bytes), reverse geocoding, image-kind prompts, the metadata block, image detection and replacement (including nested `tool_result` images), cache and single-flight behaviour, fail-soft transcription, the launcher environment and signal handling, the CLI lifecycle, and full proxy round trips against a fake upstream, streaming and mid-stream failure included.
 
 ## Troubleshooting
 

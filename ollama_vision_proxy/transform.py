@@ -134,9 +134,25 @@ def _replace(
         )
         return {"type": "text", "text": placeholder}
 
-    description = transcriber(image)
+    description, metadata = _unpack(transcriber(image))
     result.images_transcribed += 1
-    return {"type": "text", "text": wrap_transcription(description)}
+    text = wrap_transcription(description)
+    if metadata:
+        # Outside the untrusted wrapper on purpose: this is the proxy speaking
+        # from the file's own EXIF, not the vision model's output, and inside the
+        # wrapper the model is told to disregard what it reads.
+        text = f"{text}\n{metadata}"
+    return {"type": "text", "text": text}
+
+
+def _unpack(outcome: Any) -> tuple:
+    """Accept either a plain description or a Transcription-like object."""
+    if isinstance(outcome, str):
+        return outcome, None
+    description = getattr(outcome, "description", None)
+    if description is None:
+        return str(outcome), None
+    return description, getattr(outcome, "metadata", None)
 
 
 def _parse(block: dict) -> Optional[ImageBlock]:

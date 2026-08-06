@@ -4,6 +4,8 @@ import json
 
 import httpx
 
+from ollama_vision_proxy.geocode import Address
+from ollama_vision_proxy.prompts import ImageKind
 from ollama_vision_proxy.transform import ImageBlock, wrap_transcription
 from ollama_vision_proxy.vision import VisionTranscriber
 
@@ -81,19 +83,20 @@ class TestResponseParsing:
         def handler(request):
             return httpx.Response(200, json={"message": {"content": "a red bicycle"}})
 
-        assert _transcriber(handler)(_block()) == "a red bicycle"
+        result = _transcriber(handler, classify=False)(_block())
+        assert result.description == "a red bicycle"
 
     def test_description_is_stripped(self):
         def handler(request):
             return httpx.Response(200, json={"message": {"content": "  spaced  \n"}})
 
-        assert _transcriber(handler)(_block()) == "spaced"
+        assert _transcriber(handler, classify=False)(_block()).description == "spaced"
 
     def test_multiline_description_is_preserved(self):
         def handler(request):
             return httpx.Response(200, json={"message": {"content": "line1\nline2"}})
 
-        assert _transcriber(handler)(_block()) == "line1\nline2"
+        assert _transcriber(handler, classify=False)(_block()).description == "line1\nline2"
 
 
 class TestFailSoft:
@@ -103,49 +106,49 @@ class TestFailSoft:
         def handler(request):
             return httpx.Response(500, text="boom")
 
-        result = _transcriber(handler)(_block())
+        result = _transcriber(handler, classify=False)(_block()).description
         assert "transcription failed" in result
 
     def test_model_not_found_yields_a_placeholder(self):
         def handler(request):
             return httpx.Response(404, json={"error": "model 'x' not found"})
 
-        result = _transcriber(handler)(_block())
+        result = _transcriber(handler, classify=False)(_block()).description
         assert "transcription failed" in result
 
     def test_connection_error_yields_a_placeholder(self):
         def handler(request):
             raise httpx.ConnectError("refused")
 
-        result = _transcriber(handler)(_block())
+        result = _transcriber(handler, classify=False)(_block()).description
         assert "transcription failed" in result
 
     def test_timeout_yields_a_placeholder(self):
         def handler(request):
             raise httpx.ReadTimeout("too slow")
 
-        result = _transcriber(handler)(_block())
+        result = _transcriber(handler, classify=False)(_block()).description
         assert "transcription failed" in result
 
     def test_malformed_json_yields_a_placeholder(self):
         def handler(request):
             return httpx.Response(200, text="not json at all")
 
-        result = _transcriber(handler)(_block())
+        result = _transcriber(handler, classify=False)(_block()).description
         assert "transcription failed" in result
 
     def test_missing_message_key_yields_a_placeholder(self):
         def handler(request):
             return httpx.Response(200, json={"unexpected": True})
 
-        result = _transcriber(handler)(_block())
+        result = _transcriber(handler, classify=False)(_block()).description
         assert "transcription failed" in result
 
     def test_empty_description_yields_a_placeholder(self):
         def handler(request):
             return httpx.Response(200, json={"message": {"content": "   "}})
 
-        result = _transcriber(handler)(_block())
+        result = _transcriber(handler, classify=False)(_block()).description
         assert "transcription failed" in result
 
     def test_block_without_data_never_calls_upstream(self):
@@ -158,7 +161,7 @@ class TestFailSoft:
         block = ImageBlock(
             source_type="base64", media_type="image/png", data=None, url=None
         )
-        result = _transcriber(handler)(block)
+        result = _transcriber(handler, classify=False)(block).description
         assert calls == []
         assert "transcription failed" in result
 
@@ -166,9 +169,9 @@ class TestFailSoft:
         def handler(request):
             raise httpx.ConnectError("refused")
 
-        transcriber = _transcriber(handler)
+        transcriber = _transcriber(handler, classify=False)
         # Must be usable directly as the transform_request callable.
-        assert isinstance(transcriber(_block()), str)
+        assert isinstance(transcriber(_block()).description, str)
 
 
 class TestCaching:
@@ -179,10 +182,9 @@ class TestCaching:
             calls.append(1)
             return httpx.Response(200, json={"message": {"content": "cached"}})
 
-        transcriber = _transcriber(handler)
-        assert transcriber(_block(data="SAME")) == "cached"
-        assert transcriber(_block(data="SAME")) == "cached"
-        assert transcriber(_block(data="SAME")) == "cached"
+        transcriber = _transcriber(handler, classify=False)
+        for _ in range(3):
+            assert transcriber(_block(data="SAME")).description == "cached"
         assert len(calls) == 1
 
     def test_different_images_each_hit_upstream(self):
@@ -192,7 +194,7 @@ class TestCaching:
             calls.append(1)
             return httpx.Response(200, json={"message": {"content": "d"}})
 
-        transcriber = _transcriber(handler)
+        transcriber = _transcriber(handler, classify=False)
         transcriber(_block(data="A"))
         transcriber(_block(data="B"))
         assert len(calls) == 2
@@ -206,9 +208,9 @@ class TestCaching:
                 return httpx.Response(500, text="boom")
             return httpx.Response(200, json={"message": {"content": "recovered"}})
 
-        transcriber = _transcriber(handler)
-        assert "transcription failed" in transcriber(_block(data="K"))
-        assert transcriber(_block(data="K")) == "recovered"
+        transcriber = _transcriber(handler, classify=False)
+        assert "transcription failed" in transcriber(_block(data="K")).description
+        assert transcriber(_block(data="K")).description == "recovered"
         assert state["n"] == 2
 
 
@@ -245,8 +247,199 @@ class TestIntegrationWithTransform:
                 }
             ]
         }
-        result = transform_request(body, _transcriber(handler))
+        result = transform_request(body, _transcriber(handler, classify=False))
         assert result.body["messages"][0]["content"][0] == {
             "type": "text",
             "text": wrap_transcription("a chart"),
         }
+
+
+class TestTwoStepPipeline:
+    """Classify first, then describe with the prompt that kind deserves."""
+
+    def _recording_handler(self, kind_reply="SCREENSHOT", description="the text"):
+        seen = []
+
+        def handler(request):
+            body = json.loads(request.content)
+            prompt = body["messages"][0]["content"]
+            seen.append(body)
+            if "Classify this image" in prompt:
+                return httpx.Response(200, json={"message": {"content": kind_reply}})
+            return httpx.Response(200, json={"message": {"content": description}})
+
+        return handler, seen
+
+    def test_classifies_then_describes(self):
+        handler, seen = self._recording_handler()
+        result = _transcriber(handler)(_block())
+        assert len(seen) == 2
+        assert "Classify this image" in seen[0]["messages"][0]["content"]
+        assert result.description == "the text"
+
+    def test_screenshot_gets_the_screenshot_prompt(self):
+        handler, seen = self._recording_handler(kind_reply="SCREENSHOT")
+        result = _transcriber(handler)(_block())
+        assert result.kind is ImageKind.SCREENSHOT
+        assert "user interface" in seen[1]["messages"][0]["content"]
+
+    def test_photo_gets_the_photo_prompt(self):
+        handler, seen = self._recording_handler(kind_reply="PHOTO")
+        result = _transcriber(handler)(_block())
+        assert result.kind is ImageKind.PHOTO
+        describe = seen[1]["messages"][0]["content"]
+        assert "subjects" in describe and "background" in describe
+
+    def test_diagram_gets_the_diagram_prompt(self):
+        handler, seen = self._recording_handler(kind_reply="DIAGRAM")
+        result = _transcriber(handler)(_block())
+        assert result.kind is ImageKind.DIAGRAM
+        assert "diagram" in seen[1]["messages"][0]["content"].lower()
+
+    def test_classification_failure_falls_back_to_generic(self):
+        """A failed classification must not lose the description."""
+        state = {"n": 0}
+
+        def handler(request):
+            state["n"] += 1
+            if state["n"] == 1:
+                return httpx.Response(500, text="classifier down")
+            return httpx.Response(200, json={"message": {"content": "still described"}})
+
+        result = _transcriber(handler)(_block())
+        assert result.description == "still described"
+        assert result.kind is ImageKind.OTHER
+
+    def test_an_explicit_prompt_skips_classification(self):
+        handler, seen = self._recording_handler()
+        _transcriber(handler, prompt="JUST THIS")(_block())
+        assert len(seen) == 1
+        assert seen[0]["messages"][0]["content"] == "JUST THIS"
+
+    def test_both_calls_are_greedy(self):
+        """Temperature 1 made transcription differ run to run."""
+        handler, seen = self._recording_handler()
+        _transcriber(handler)(_block())
+        for body in seen:
+            assert body["options"]["temperature"] == 0
+
+    def test_classification_is_capped_in_length(self):
+        handler, seen = self._recording_handler()
+        _transcriber(handler)(_block())
+        assert seen[0]["options"]["num_predict"] <= 16
+
+    def test_pipeline_is_cached_as_a_whole(self):
+        handler, seen = self._recording_handler()
+        transcriber = _transcriber(handler)
+        for _ in range(4):
+            transcriber(_block(data="SAME"))
+        assert len(seen) == 2  # one classify plus one describe, then all cached
+
+
+class TestMetadataAttachment:
+    def _jpeg_with_gps(self):
+        import sys
+
+        sys.path.insert(0, "tests")
+        from test_exif import build_exif_jpeg
+
+        return build_exif_jpeg()
+
+    def _b64(self, raw):
+        import base64
+
+        return base64.b64encode(raw).decode()
+
+    def test_metadata_is_attached_when_gps_is_present(self):
+        def handler(request):
+            return httpx.Response(200, json={"message": {"content": "a photo"}})
+
+        block = _block(data=self._b64(self._jpeg_with_gps()))
+        result = _transcriber(handler, classify=False)(block)
+        assert result.metadata is not None
+        assert "<metadata>" in result.metadata
+        assert "iPhone" in result.metadata
+
+    def test_no_metadata_without_gps(self):
+        import sys
+
+        sys.path.insert(0, "tests")
+        from test_exif import build_exif_jpeg
+
+        def handler(request):
+            return httpx.Response(200, json={"message": {"content": "a screenshot"}})
+
+        block = _block(data=self._b64(build_exif_jpeg(with_gps=False)))
+        result = _transcriber(handler, classify=False)(block)
+        assert result.metadata is None
+
+    def test_no_metadata_for_a_plain_image(self):
+        def handler(request):
+            return httpx.Response(200, json={"message": {"content": "x"}})
+
+        result = _transcriber(handler, classify=False)(_block(data="bm90YW5pbWFnZQ=="))
+        assert result.metadata is None
+
+    def test_geocoder_is_consulted_for_coordinates(self):
+        seen = {}
+
+        def handler(request):
+            return httpx.Response(200, json={"message": {"content": "a photo"}})
+
+        class FakeGeocoder:
+            def lookup(self, latitude, longitude):
+                seen["coords"] = (latitude, longitude)
+                return Address(city="Toronto", country="Canada")
+
+            def close(self):
+                pass
+
+        block = _block(data=self._b64(self._jpeg_with_gps()))
+        result = _transcriber(handler, classify=False, geocoder=FakeGeocoder())(block)
+        assert seen["coords"][0] > 43 and seen["coords"][1] < -80
+        assert "Toronto" in result.metadata
+
+    def test_geocoder_failure_still_yields_coordinates(self):
+        def handler(request):
+            return httpx.Response(200, json={"message": {"content": "a photo"}})
+
+        class DeadGeocoder:
+            def lookup(self, latitude, longitude):
+                return None
+
+            def close(self):
+                pass
+
+        block = _block(data=self._b64(self._jpeg_with_gps()))
+        result = _transcriber(handler, classify=False, geocoder=DeadGeocoder())(block)
+        assert "lat" in result.metadata
+        assert "city" not in result.metadata
+
+    def test_metadata_reaches_the_request_outside_the_untrusted_wrapper(self):
+        from ollama_vision_proxy.transform import TRANSCRIPTION_CLOSE, transform_request
+
+        def handler(request):
+            return httpx.Response(200, json={"message": {"content": "a photo"}})
+
+        body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": self._b64(self._jpeg_with_gps()),
+                            },
+                        }
+                    ],
+                }
+            ]
+        }
+        result = transform_request(body, _transcriber(handler, classify=False))
+        text = result.body["messages"][0]["content"][0]["text"]
+        assert "<metadata>" in text
+        # Trusted proxy data must sit after the untrusted description wrapper.
+        assert text.index(TRANSCRIPTION_CLOSE) < text.index("<metadata>")

@@ -10,6 +10,7 @@ from typing import List, Optional, Sequence
 import httpx
 
 from . import __version__
+from .geocode import NOMINATIM_URL, ReverseGeocoder
 from .launcher import build_claude_env, run_claude, split_passthrough
 from .preflight import (
     CHECK_TIMEOUT,
@@ -87,6 +88,17 @@ def _add_launch_arguments(launch: argparse.ArgumentParser) -> None:
         help="pull a missing vision model without asking",
     )
     launch.add_argument(
+        "--geocode-url",
+        default=NOMINATIM_URL,
+        help="reverse geocoding endpoint used to name a photo's location "
+        f"(default: {NOMINATIM_URL})",
+    )
+    launch.add_argument(
+        "--no-geocode",
+        action="store_true",
+        help="skip the address lookup; coordinates are still reported",
+    )
+    launch.add_argument(
         "--log-file",
         default=None,
         help="write full logs here instead of the terminal, so the Claude Code "
@@ -130,6 +142,7 @@ def _launch(args: argparse.Namespace, claude_args: List[str]) -> int:
         model=args.vision_model,
         upstream_url=args.upstream_url,
         timeout=args.vision_timeout,
+        geocoder=ReverseGeocoder(url=args.geocode_url, enabled=not args.no_geocode),
     )
     proxy = ProxyServer(
         port=args.proxy_port,
