@@ -87,7 +87,16 @@ def _add_launch_arguments(launch: argparse.ArgumentParser) -> None:
         help="pull a missing vision model without asking",
     )
     launch.add_argument(
-        "-v", "--verbose", action="store_true", help="enable debug logging"
+        "--log-file",
+        default=None,
+        help="write full logs here instead of the terminal, so the Claude Code "
+        "interface stays clean",
+    )
+    launch.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="debug logging, kept on the terminal even during the session",
     )
 
 
@@ -96,7 +105,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     own_args, claude_args = split_passthrough(raw)
     args = build_parser().parse_args(own_args)
 
-    _configure_logging(args.verbose)
+    _configure_logging(args.verbose, args.log_file)
 
     try:
         return _launch(args, claude_args)
@@ -145,8 +154,12 @@ def _launch(args: argparse.Namespace, claude_args: List[str]) -> int:
             args.vision_model,
         )
         env = build_claude_env(args.target_model, proxy.port)
+        # claude owns the terminal from here on. Anything we write to stderr
+        # lands in the middle of its interface, so go quiet for the session.
+        set_terminal_logging(False)
         return run_claude(claude_path, claude_args, env)
     finally:
+        set_terminal_logging(True)
         proxy.stop()
         transcriber.close()
         logger.info(
@@ -193,18 +206,59 @@ def _confirm(question: str) -> bool:
     return answer.strip().lower() in ("y", "yes")
 
 
-def _configure_logging(verbose: bool) -> None:
+#: The stderr handler, kept so it can be detached while claude owns the screen.
+_terminal_handler: Optional[logging.Handler] = None
+_keep_terminal_logging = False
+
+
+def _configure_logging(verbose: bool, log_file: Optional[str] = None) -> None:
+    global _terminal_handler, _keep_terminal_logging
+    _keep_terminal_logging = verbose
+
+    handlers: List[logging.Handler] = []
+    if log_file:
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        )
+        handlers.append(file_handler)
+
+    # Without this, detaching the stderr handler can leave the root logger with
+    # no handlers at all, and logging falls back to logging.lastResort, which
+    # prints WARNING and above straight to stderr. A NullHandler keeps the
+    # fallback from ever engaging, so silence really is silence.
+    handlers.append(logging.NullHandler())
+
+    _terminal_handler = logging.StreamHandler(sys.stderr)
+    _terminal_handler.setFormatter(logging.Formatter("ovp: %(message)s"))
+    handlers.append(_terminal_handler)
+
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
-        format="ovp: %(message)s",
-        stream=sys.stderr,
+        handlers=handlers,
+        force=True,
     )
-    # httpx logs every request at INFO, which would bury our own output and
-    # echo Claude Code's traffic on the terminal.
+    # httpx logs every request at INFO, which would echo Claude Code's traffic.
     for noisy in ("httpx", "httpcore"):
         logging.getLogger(noisy).setLevel(
             logging.DEBUG if verbose else logging.WARNING
         )
+
+
+def set_terminal_logging(enabled: bool) -> None:
+    """Attach or detach the stderr handler.
+
+    Startup messages are useful, but once claude is drawing its interface any
+    further stderr write appears inside it. With -v the caller has asked for the
+    noise, so it stays. A --log-file keeps the full record either way.
+    """
+    if _terminal_handler is None or _keep_terminal_logging:
+        return
+    root = logging.getLogger()
+    if enabled and _terminal_handler not in root.handlers:
+        root.addHandler(_terminal_handler)
+    elif not enabled and _terminal_handler in root.handlers:
+        root.removeHandler(_terminal_handler)
 
 
 if __name__ == "__main__":  # pragma: no cover

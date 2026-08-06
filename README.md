@@ -119,7 +119,14 @@ The same commands work verbatim in PowerShell.
 | `--upstream-url` | `http://127.0.0.1:11434` | The Ollama server to forward to. |
 | `--vision-timeout` | `180` | Seconds to wait for one transcription. |
 | `-y`, `--yes` | off | Pull a missing vision model without asking. |
-| `-v`, `--verbose` | off | Debug logging, including every proxied request. |
+| `--log-file` | none | Write full logs to this file instead of the terminal. |
+| `-v`, `--verbose` | off | Debug logging, kept on the terminal even during the session. |
+
+### The terminal stays clean
+
+Startup messages are printed before Claude Code takes over the screen, and the cache summary after it exits. In between, nothing is written to the terminal, because Claude Code is drawing its interface there and any stray line lands in the middle of it. Use `--log-file /tmp/ovp.log` to keep the full record, or `-v` when you would rather watch the traffic live and accept the mess.
+
+Failed transcriptions still reach you through the conversation itself, as `[Image: transcription failed (reason)]`, which is the right channel for it.
 
 ### Why it does not wrap `ollama launch`
 
