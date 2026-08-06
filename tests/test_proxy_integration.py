@@ -12,6 +12,7 @@ import httpx
 import pytest
 
 from ollama_vision_proxy.proxy import ProxyServer
+from ollama_vision_proxy.transform import wrap_transcription
 
 SSE_EVENTS = [
     b'event: message_start\ndata: {"type":"message_start"}\n\n',
@@ -81,6 +82,10 @@ class FakeUpstream:
                 self._record()
                 if upstream.mode == "sse":
                     self._respond_sse()
+                elif upstream.mode == "sse_abort":
+                    self._respond_sse_abort()
+                elif upstream.mode == "sse_truncate":
+                    self._respond_sse_truncate()
                 elif upstream.mode == "status":
                     self._respond_json({"error": "upstream said no"}, upstream.status)
                 else:
@@ -107,6 +112,42 @@ class FakeUpstream:
                     self.wfile.flush()
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
+
+            def _respond_sse_abort(self):
+                """Commit SSE headers, send one event, then reset the connection.
+
+                This is the normal failure mode of a remote model: the stream
+                dies after the proxy has already sent 200 to the client.
+                """
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                event = SSE_EVENTS[0]
+                self.wfile.write(b"%x\r\n" % len(event) + event + b"\r\n")
+                self.wfile.flush()
+                self.connection.setsockopt(
+                    socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+                )
+                self.connection.close()
+                self.close_connection = True
+
+            def _respond_sse_truncate(self):
+                """Send one event then close gracefully, with no final chunk.
+
+                Unlike the RST case, a FIN preserves already-delivered bytes, so
+                this checks the good event survives while the stream still ends
+                as a single well-formed response.
+                """
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                event = SSE_EVENTS[0]
+                self.wfile.write(b"%x\r\n" % len(event) + event + b"\r\n")
+                self.wfile.flush()
+                self.connection.shutdown(socket.SHUT_WR)
+                self.close_connection = True
 
         self._server = _QuietTestServer(("127.0.0.1", 0), Handler)
         self._server.unexpected_errors = self.unexpected_errors
@@ -178,7 +219,7 @@ class TestImageTranscription:
     def test_image_is_replaced_with_its_description(self, proxy, upstream):
         httpx.post(f"{proxy.url}/v1/messages", json=_image_request("ABC"), timeout=10)
         blocks = upstream.last_body()["messages"][0]["content"]
-        assert blocks[1] == {"type": "text", "text": "[Image: described(ABC)]"}
+        assert blocks[1] == {"type": "text", "text": wrap_transcription("described(ABC)")}
 
     def test_other_fields_survive(self, proxy, upstream):
         httpx.post(f"{proxy.url}/v1/messages", json=_image_request(), timeout=10)
@@ -346,6 +387,149 @@ class TestRobustness:
         for thread in threads:
             thread.join(timeout=20)
         assert results == [200] * 8
+
+
+def _raw_exchange(port, request_bytes, reads=1):
+    """Send raw bytes and read the whole response, so the wire is inspectable."""
+    sock = socket.create_connection(("127.0.0.1", port), timeout=15)
+    try:
+        sock.sendall(request_bytes)
+        sock.settimeout(10)
+        received = b""
+        while True:
+            try:
+                part = sock.recv(65536)
+            except socket.timeout:
+                break
+            if not part:
+                break
+            received += part
+            if reads and received.count(b"0\r\n\r\n") >= reads:
+                break
+        return received
+    finally:
+        sock.close()
+
+
+def _chunked_request(path, payload, chunks=2):
+    header = (
+        f"POST {path} HTTP/1.1\r\nHost: x\r\n"
+        "Content-Type: application/json\r\n"
+        "Transfer-Encoding: chunked\r\n\r\n"
+    ).encode()
+    size = max(1, len(payload) // chunks)
+    body = b""
+    for start in range(0, len(payload), size):
+        piece = payload[start : start + size]
+        body += b"%x\r\n" % len(piece) + piece + b"\r\n"
+    return header + body + b"0\r\n\r\n"
+
+
+class TestMidStreamUpstreamFailure:
+    """Once a 200 and SSE headers are committed, a later upstream failure must
+    not put a second HTTP response inside the body the client is reading."""
+
+    def test_only_one_http_response_is_written(self, proxy, upstream):
+        upstream.mode = "sse_abort"
+        payload = json.dumps(_image_request(stream=True)).encode()
+        request = (
+            b"POST /v1/messages HTTP/1.1\r\nHost: x\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Content-Length: " + str(len(payload)).encode() + b"\r\n\r\n" + payload
+        )
+        raw = _raw_exchange(proxy.port, request)
+        assert raw.count(b"HTTP/1.1") == 1, raw[:400]
+        assert b"502" not in raw
+
+    def test_stream_is_terminated_with_an_error_event(self, proxy, upstream):
+        upstream.mode = "sse_abort"
+        payload = json.dumps(_image_request(stream=True)).encode()
+        request = (
+            b"POST /v1/messages HTTP/1.1\r\nHost: x\r\n"
+            b"Content-Length: " + str(len(payload)).encode() + b"\r\n\r\n" + payload
+        )
+        raw = _raw_exchange(proxy.port, request)
+        assert b"event: error" in raw
+        # Not asserting the earlier event survived: an RST makes the receiver
+        # discard its buffer, so losing it is TCP, not the proxy. The graceful
+        # case below is where delivered bytes must be preserved.
+        assert raw.rstrip().endswith(b"0")  # terminating zero-length chunk
+
+    def test_graceful_truncation_keeps_delivered_events(self, proxy, upstream):
+        upstream.mode = "sse_truncate"
+        payload = json.dumps(_image_request(stream=True)).encode()
+        request = (
+            b"POST /v1/messages HTTP/1.1\r\nHost: x\r\n"
+            b"Content-Length: " + str(len(payload)).encode() + b"\r\n\r\n" + payload
+        )
+        raw = _raw_exchange(proxy.port, request)
+        assert raw.count(b"HTTP/1.1") == 1, raw[:400]
+        assert b"message_start" in raw
+        assert b"event: error" in raw
+        assert raw.rstrip().endswith(b"0")
+
+    def test_upstream_failure_before_headers_still_yields_502(self, upstream):
+        """The pre-headers path must keep returning a normal error response."""
+        server = ProxyServer(
+            port=0, upstream_url="http://127.0.0.1:1", transcriber=lambda b: "x"
+        )
+        server.start()
+        try:
+            response = httpx.post(
+                f"{server.url}/v1/messages", json=_image_request(), timeout=10
+            )
+            assert response.status_code == 502
+        finally:
+            server.stop()
+
+
+class TestChunkedRequestBodies:
+    """Honouring only Content-Length dropped the payload and left the chunk
+    bytes in the socket, where they were parsed as the next request."""
+
+    def test_chunked_body_reaches_upstream_intact(self, proxy, upstream):
+        payload = json.dumps(_image_request("CHUNKED")).encode()
+        raw = _raw_exchange(proxy.port, _chunked_request("/v1/messages", payload))
+        assert b"HTTP/1.1 200" in raw
+        body = upstream.last_body()
+        assert body["model"] == "glm-5.2:cloud"
+        blocks = body["messages"][0]["content"]
+        assert blocks[1] == {
+            "type": "text",
+            "text": wrap_transcription("described(CHUNKED)"),
+        }
+
+    def test_content_length_is_set_for_the_forwarded_request(self, proxy, upstream):
+        payload = json.dumps(_image_request()).encode()
+        _raw_exchange(proxy.port, _chunked_request("/v1/messages", payload))
+        request = upstream.requests[-1]
+        assert int(request["headers"]["Content-Length"]) == len(request["raw"])
+        assert "chunked" not in (request["headers"].get("Transfer-Encoding") or "")
+
+    def test_a_following_request_on_the_same_connection_still_works(
+        self, proxy, upstream
+    ):
+        """The leftover-bytes bug swallowed every later request on the socket."""
+        payload = json.dumps(_image_request("FIRST")).encode()
+        second = json.dumps({"model": "m", "messages": []}).encode()
+        request = _chunked_request("/v1/messages", payload) + (
+            b"POST /v1/messages HTTP/1.1\r\nHost: x\r\n"
+            b"Content-Length: " + str(len(second)).encode() + b"\r\n\r\n" + second
+        )
+        _raw_exchange(proxy.port, request, reads=0)
+        paths = [entry["path"] for entry in upstream.requests]
+        assert paths.count("/v1/messages") >= 2, upstream.requests
+        assert upstream.last_body() == {"model": "m", "messages": []}
+
+    def test_malformed_chunk_size_is_rejected_not_forwarded(self, proxy, upstream):
+        before = len(upstream.requests)
+        request = (
+            b"POST /v1/messages HTTP/1.1\r\nHost: x\r\n"
+            b"Transfer-Encoding: chunked\r\n\r\nZZZZ\r\n"
+        )
+        raw = _raw_exchange(proxy.port, request, reads=0)
+        assert b"400" in raw
+        assert len(upstream.requests) == before
 
 
 class TestClientDisconnects:

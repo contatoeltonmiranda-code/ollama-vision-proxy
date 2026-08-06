@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
@@ -75,12 +76,43 @@ def run_claude(
     claude_path: str,
     claude_args: Sequence[str],
     env: Mapping[str, str],
+    popen=subprocess.Popen,
 ) -> int:
-    """Run claude in the foreground and return its exit code."""
+    """Run claude in the foreground and return its exit code.
+
+    SIGINT is ignored in this process while claude runs, so Ctrl-C belongs to
+    claude alone. subprocess.call would not do: its implementation kills the
+    child on any exception, so a KeyboardInterrupt here SIGKILLed claude before
+    it could shut down cleanly, losing whatever it had not flushed.
+    """
     command = build_claude_command(claude_path, claude_args)
     logger.debug("spawning %s", command)
+
+    previous_handler = _ignore_sigint()
     try:
-        return subprocess.call(command, env=dict(env))
-    except KeyboardInterrupt:
-        # claude shares the terminal's process group and handles Ctrl-C itself.
-        return 130
+        process = popen(command, env=dict(env))
+        while True:
+            try:
+                return process.wait()
+            except KeyboardInterrupt:  # pragma: no cover - handler is SIG_IGN
+                continue  # the child owns the interrupt; keep waiting for it
+    finally:
+        _restore_sigint(previous_handler)
+
+
+def _ignore_sigint():
+    """Ignore SIGINT here, returning the previous handler (None if not possible)."""
+    try:
+        return signal.signal(signal.SIGINT, signal.SIG_IGN)
+    except (ValueError, OSError):
+        # signal.signal only works on the main thread of the main interpreter.
+        return None
+
+
+def _restore_sigint(previous_handler) -> None:
+    if previous_handler is None:
+        return
+    try:
+        signal.signal(signal.SIGINT, previous_handler)
+    except (ValueError, OSError):
+        pass

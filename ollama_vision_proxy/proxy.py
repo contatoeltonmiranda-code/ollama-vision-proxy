@@ -48,6 +48,14 @@ HOP_BY_HOP = frozenset(
 #: Read timeout is disabled: a streamed completion can legitimately take minutes.
 UPSTREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=60.0, pool=60.0)
 
+#: Generous cap for one chunk-size line; the stdlib uses the same order.
+MAX_CHUNK_LINE = 65536
+
+
+class _MalformedBody(Exception):
+    """The request body could not be decoded."""
+
+
 #: A client vanishing is routine, not an error. ConnectionError covers
 #: ConnectionResetError, BrokenPipeError, and the ConnectionAbortedError that
 #: Windows raises for the same situation.
@@ -144,6 +152,9 @@ class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = f"ollama-vision-proxy/{__version__}"
 
+    #: True once a status line is on the wire, so we never send a second one.
+    _headers_sent = False
+
     # BaseHTTPRequestHandler writes to stderr by default; route through logging.
     def log_message(self, fmt: str, *args: object) -> None:
         logger.debug("%s - %s", self.address_string(), fmt % args)
@@ -188,7 +199,15 @@ class _Handler(BaseHTTPRequestHandler):
         return self.server.proxy  # type: ignore[attr-defined,no-any-return]
 
     def _proxy(self) -> None:
-        body = self._read_body()
+        self._headers_sent = False
+        try:
+            body = self._read_body()
+        except _MalformedBody as exc:
+            logger.error("could not read the request body: %s", exc)
+            self._send_json_error(400, f"Malformed request body: {exc}")
+            self.close_connection = True
+            return
+
         if self.command == "POST" and self._is_messages_request():
             body = self._transcribe_images(body)
 
@@ -202,9 +221,18 @@ class _Handler(BaseHTTPRequestHandler):
                 self._relay(upstream)
         except httpx.HTTPError as exc:
             logger.error("upstream request failed: %s", exc)
-            self._send_json_error(502, f"Cannot reach the Ollama server: {exc}")
+            if self._headers_sent:
+                # A response is already committed on this connection. Writing a
+                # second status line here would put "HTTP/1.1 502" inside the
+                # body the client is still reading, so end the stream instead.
+                self._finish_broken_stream(exc)
+            else:
+                self._send_json_error(502, f"Cannot reach the Ollama server: {exc}")
 
     def _read_body(self) -> bytes:
+        encoding = (self.headers.get("Transfer-Encoding") or "").lower()
+        if "chunked" in encoding:
+            return self._read_chunked_body()
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -212,6 +240,39 @@ class _Handler(BaseHTTPRequestHandler):
         if length <= 0:
             return b""
         return self.rfile.read(length)
+
+    def _read_chunked_body(self) -> bytes:
+        """Decode a chunked request body.
+
+        Honouring only Content-Length silently dropped the payload AND left the
+        chunk bytes in the socket, where they were then parsed as the next
+        request, breaking every later request on the connection.
+        """
+        parts = []
+        while True:
+            line = self.rfile.readline(MAX_CHUNK_LINE)
+            if not line:
+                raise _MalformedBody("connection ended inside a chunked body")
+            size_field = line.split(b";", 1)[0].strip()
+            try:
+                size = int(size_field, 16)
+            except ValueError:
+                raise _MalformedBody(f"bad chunk size {size_field!r}") from None
+            if size == 0:
+                self._consume_trailers()
+                break
+            chunk = self.rfile.read(size)
+            if len(chunk) != size:
+                raise _MalformedBody("chunked body ended early")
+            parts.append(chunk)
+            self.rfile.read(2)  # the CRLF that terminates the chunk
+        return b"".join(parts)
+
+    def _consume_trailers(self) -> None:
+        while True:
+            line = self.rfile.readline(MAX_CHUNK_LINE)
+            if line in (b"\r\n", b"\n", b""):
+                return
 
     def _is_messages_request(self) -> bool:
         """Exact match only, so /v1/messages/count_tokens passes through."""
@@ -267,15 +328,42 @@ class _Handler(BaseHTTPRequestHandler):
             for chunk in upstream.iter_raw():
                 if not chunk:
                     continue
-                self.wfile.write(b"%x\r\n" % len(chunk) + chunk + b"\r\n")
-                self.wfile.flush()
+                self._write_chunk(chunk)
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             logger.debug("client disconnected mid-stream")
             self.close_connection = True
 
+    def _write_chunk(self, chunk: bytes) -> None:
+        self.wfile.write(b"%x\r\n" % len(chunk) + chunk + b"\r\n")
+        self.wfile.flush()
+
+    def _finish_broken_stream(self, exc: Exception) -> None:
+        """End a stream whose headers are already sent, without a second response.
+
+        The client is mid-SSE, so the only well-formed thing we can say is an
+        error event followed by the terminating chunk.
+        """
+        payload = json.dumps(
+            {
+                "type": "error",
+                "error": {
+                    "type": "api_error",
+                    "message": f"Upstream stream failed: {exc}",
+                },
+            }
+        )
+        try:
+            self._write_chunk(f"event: error\ndata: {payload}\n\n".encode("utf-8"))
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            logger.debug("client already gone while ending a broken stream")
+        self.close_connection = True
+
     def _send_upstream_headers(self, upstream: httpx.Response, extra: dict) -> None:
+        self._headers_sent = True
         self.send_response(upstream.status_code)
         for name, value in upstream.headers.multi_items():
             lowered = name.lower()

@@ -64,6 +64,92 @@ class TestBuildClaudeEnv:
         assert all(isinstance(k, str) and isinstance(v, str) for k, v in env.items())
 
 
+class TestSigintOwnership:
+    """subprocess.call kills the child on any exception, so a KeyboardInterrupt
+    in the parent SIGKILLed claude before it could shut down cleanly."""
+
+    def test_sigint_is_ignored_while_the_child_runs(self):
+        import signal
+
+        from ollama_vision_proxy.launcher import run_claude
+
+        original = signal.getsignal(signal.SIGINT)
+        seen = {}
+
+        class FakePopen:
+            def __init__(self, command, env=None):
+                pass
+
+            def wait(self):
+                seen["handler"] = signal.getsignal(signal.SIGINT)
+                return 7
+
+        assert run_claude("/bin/claude", [], {}, popen=FakePopen) == 7
+        assert seen["handler"] is signal.SIG_IGN
+        assert signal.getsignal(signal.SIGINT) is original
+
+    def test_handler_is_restored_even_if_the_child_raises(self):
+        import signal
+
+        from ollama_vision_proxy.launcher import run_claude
+
+        original = signal.getsignal(signal.SIGINT)
+
+        class Boom:
+            def __init__(self, command, env=None):
+                raise OSError("cannot spawn")
+
+        try:
+            run_claude("/bin/claude", [], {}, popen=Boom)
+        except OSError:
+            pass
+        assert signal.getsignal(signal.SIGINT) is original
+
+    def test_child_is_not_killed_on_keyboard_interrupt(self):
+        from ollama_vision_proxy.launcher import run_claude
+
+        class FakePopen:
+            def __init__(self, command, env=None):
+                self.raised = False
+                self.killed = False
+
+            def wait(self):
+                if not self.raised:
+                    self.raised = True
+                    raise KeyboardInterrupt
+                return 0
+
+            def kill(self):
+                self.killed = True
+
+        created = []
+
+        def factory(command, env=None):
+            process = FakePopen(command, env)
+            created.append(process)
+            return process
+
+        assert run_claude("/bin/claude", [], {}, popen=factory) == 0
+        assert created[0].killed is False
+
+    def test_env_and_command_reach_the_child(self):
+        from ollama_vision_proxy.launcher import run_claude
+
+        seen = {}
+
+        class FakePopen:
+            def __init__(self, command, env=None):
+                seen["command"] = command
+                seen["env"] = env
+
+            def wait(self):
+                return 0
+
+        run_claude("/bin/claude", ["--agent", "x"], {"A": "1"}, popen=FakePopen)
+        assert seen["command"] == ["/bin/claude", "--agent", "x"]
+        assert seen["env"] == {"A": "1"}
+
+
 class TestBuildClaudeCommand:
     def test_posix_invokes_the_binary_directly(self):
         from ollama_vision_proxy.launcher import build_claude_command

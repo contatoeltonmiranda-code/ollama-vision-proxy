@@ -4,7 +4,7 @@ import json
 
 import httpx
 
-from ollama_vision_proxy.transform import ImageBlock
+from ollama_vision_proxy.transform import ImageBlock, wrap_transcription
 from ollama_vision_proxy.vision import VisionTranscriber
 
 
@@ -248,5 +248,5 @@ class TestIntegrationWithTransform:
         result = transform_request(body, _transcriber(handler))
         assert result.body["messages"][0]["content"][0] == {
             "type": "text",
-            "text": "[Image: a chart]",
+            "text": wrap_transcription("a chart"),
         }
