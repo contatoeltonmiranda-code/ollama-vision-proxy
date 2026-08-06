@@ -92,6 +92,10 @@ def _add_launch_arguments(launch: argparse.ArgumentParser) -> None:
         action="store_true",
         help="pull a missing vision model without asking",
     )
+    _add_output_arguments(launch)
+
+
+def _add_output_arguments(launch: argparse.ArgumentParser) -> None:
     launch.add_argument(
         "--vision-context",
         type=int,
@@ -151,18 +155,7 @@ def _launch(args: argparse.Namespace, claude_args: List[str]) -> int:
     claude_path = find_claude_cli()
     logger.debug("using claude at %s", claude_path)
 
-    transcriber = VisionTranscriber(
-        model=args.vision_model,
-        upstream_url=args.upstream_url,
-        timeout=args.vision_timeout,
-        num_ctx=args.vision_context,
-        geocoder=ReverseGeocoder(url=args.geocode_url, enabled=not args.no_geocode),
-    )
-    proxy = ProxyServer(
-        port=args.proxy_port,
-        upstream_url=args.upstream_url,
-        transcriber=transcriber,
-    )
+    transcriber, proxy = _build_pipeline(args)
 
     try:
         proxy.start()
@@ -194,6 +187,23 @@ def _launch(args: argparse.Namespace, claude_args: List[str]) -> int:
             transcriber.cache.hits,
             transcriber.cache.misses,
         )
+
+
+def _build_pipeline(args: argparse.Namespace):
+    """The transcriber and the proxy that will call it."""
+    transcriber = VisionTranscriber(
+        model=args.vision_model,
+        upstream_url=args.upstream_url,
+        timeout=args.vision_timeout,
+        num_ctx=args.vision_context,
+        geocoder=ReverseGeocoder(url=args.geocode_url, enabled=not args.no_geocode),
+    )
+    proxy = ProxyServer(
+        port=args.proxy_port,
+        upstream_url=args.upstream_url,
+        transcriber=transcriber,
+    )
+    return transcriber, proxy
 
 
 def _ensure_vision_model(

@@ -76,14 +76,17 @@ ollama pull gemma3:4b
 
 Other options:
 
-| Model | Size | Measured | Notes |
-|---|---|---|---|
-| `gemma3:4b` | 3.3 GB | 20.8s, 5/7 OCR | **Default.** Does not deliberate, so latency is predictable. |
-| `qwen3-vl:4b` | 3.3 GB | 202s, 6/7 OCR | Better OCR, but see the warning below. Needs `--vision-timeout 240`. |
-| `qwen3-vl:8b` | 6.1 GB | 103s, 7/7 OCR | Best accuracy measured. Same deliberation problem. |
-| `minicpm-v` | ~5.5 GB | not measured | Recommended elsewhere for OCR; untested here. |
+| Model | Size | OCR | Latency, one screenshot | Notes |
+|---|---|---|---|---|
+| `gemma3:4b` | 3.3 GB | 5/7 | 20.8s | **Default.** Does not deliberate, so latency is predictable. |
+| `qwen3-vl:4b` | 3.3 GB | 6/7 | 202s | Reads text better, unusable latency. See below. |
+| `qwen3-vl:8b` | 6.1 GB | 7/7 | not measured | Best accuracy seen. Same deliberation problem, probably worse. |
+| `qwen3-vl:2b` | 1.9 GB | 5/7 | not measured | No better than the default at OCR. |
+| `minicpm-v` | ~5.5 GB | not measured | not measured | Recommended elsewhere for OCR; untested here. |
 
-Numbers are from four images with human-verified ground truth, one model resident at a time. OCR is exact-substring recall on strings visibly present in the images.
+OCR is exact-substring recall over 7 strings across 3 images with human-verified ground truth, one model resident at a time. Latency is a separate single-screenshot measurement, so the two columns are not the same run and must not be added together.
+
+Two honesty notes on this table. The `qwen3-vl` OCR figures were taken before a classifier bug was fixed, so they reflect the generic prompt rather than the specialised one; `qwen3-vl:4b` independently scored 6/6 on a screenshot after the fix, so its accuracy advantage holds either way. And the two "not measured" latencies are blank rather than estimated, because the numbers I had for them predate the same fix and would understate the real cost.
 
 ### Why the most accurate model is not the default
 
@@ -225,7 +228,7 @@ uv pip install -e ".[dev]"
 .venv/bin/python -m pytest
 ```
 
-257 tests cover EXIF parsing (including truncated and hostile bytes), reverse geocoding, image-kind prompts, the metadata block, image detection and replacement (including nested `tool_result` images), cache and single-flight behaviour, fail-soft transcription, the launcher environment and signal handling, the CLI lifecycle, and full proxy round trips against a fake upstream, streaming and mid-stream failure included.
+274 tests cover EXIF parsing (including truncated and hostile bytes), reverse geocoding, image-kind prompts, the metadata block, image detection and replacement (including nested `tool_result` images), cache and single-flight behaviour, fail-soft transcription, the launcher environment and signal handling, the CLI lifecycle, and full proxy round trips against a fake upstream, streaming and mid-stream failure included.
 
 ## Troubleshooting
 
