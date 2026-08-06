@@ -343,9 +343,7 @@ class TestTwoStepPipeline:
 
 class TestMetadataAttachment:
     def _jpeg_with_gps(self):
-        import sys
-
-        sys.path.insert(0, "tests")
+        # pytest's prepend import mode already puts tests/ on sys.path.
         from test_exif import build_exif_jpeg
 
         return build_exif_jpeg()
@@ -366,9 +364,6 @@ class TestMetadataAttachment:
         assert "iPhone" in result.metadata
 
     def test_no_metadata_without_gps(self):
-        import sys
-
-        sys.path.insert(0, "tests")
         from test_exif import build_exif_jpeg
 
         def handler(request):
