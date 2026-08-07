@@ -1,6 +1,6 @@
 # How to wire Claude Code to ollama-vision-proxy
 
-This runbook takes a fresh clone of this repo to a working install, verifies the whole image path without needing a terminal session, and ends with the one command your human has to run themselves.
+This runbook takes a fresh clone of this repo to a working install, verifies the whole image path without needing an interactive session, and ends with the one command your human has to run themselves.
 
 It is written to be executed by a Claude Code agent. Every step has a command and an observable result, so no step is ever "probably fine". If a result does not appear as described, stop at that step and say so rather than continuing.
 
@@ -35,7 +35,7 @@ On Windows PowerShell, use `Invoke-RestMethod http://127.0.0.1:11434/api/version
 which claude    # Windows PowerShell: Get-Command claude
 ```
 
-Expect a path. If there is none, `ovp` will refuse to start later with `Could not find the 'claude' CLI on PATH`.
+Expect a path. If there is none, `ovp` refuses to start later, reporting that it could not find the `claude` CLI on `PATH`.
 
 ## Step 3. Choose the target model, and check it supports tools
 
@@ -61,7 +61,7 @@ API Error: 400 registry.ollama.ai/library/gemma3:1b does not support tools
 
 `ovp` does not preflight the target model at all, so a name that is simply wrong also survives until the first turn, and then returns `HTTP 404 model "<name>" not found`. Confirm the name with `ollama show` now and you avoid both.
 
-If your human has no suitable model, `gemma4:e2b-mlx` reports `completion, tools, thinking` and is a verified fit. It is about 6.5 GB, so ask first. The author's own example is `glm-5.2:cloud`, which is served by Ollama Cloud rather than locally and needs an ollama.com account.
+If your human has no suitable model, `gemma4:e2b-mlx` reports `completion`, `tools` and `thinking`, with no `vision`, which is the right shape. It is about 6.5 GB, so ask before pulling it. The README's own example is `glm-5.2:cloud`, which Ollama serves from its cloud rather than from local weights.
 
 ## Step 4. Choose the vision model, and check it supports vision
 
@@ -109,40 +109,66 @@ ovp --version
 
 Expect `ovp 0.1.0`. If the command is not found, the install worked but its `bin` directory is not on `PATH`: run the shell command listed beside your install method above, or call the executable by its full path for the rest of this runbook.
 
-## Step 6. Verify the whole chain, without a terminal session
+## Step 6. Verify the whole chain, without an interactive session
 
-This is the step that proves the proxy actually does its job. Write a test image, then send Claude Code at it through the proxy in headless mode.
+This is the step that proves the proxy actually does its job. Write a test image, then send Claude Code at it through the proxy in headless mode. On Windows, substitute a writable path such as `$env:TEMP\ovp-red.png` for `/tmp/ovp-red.png` throughout this step.
 
 ```bash
 python3 -c "import base64,pathlib;pathlib.Path('/tmp/ovp-red.png').write_bytes(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAT0lEQVR42u3PQQkAAAgEsEty/UMZxgi+hcEKLNO+FgEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQGBywLPLIEA68ZURwAAAABJRU5ErkJggg=='))"
 ```
 
-That writes a 64x64 solid red PNG. Now run it through the proxy, substituting your target model from step 3:
+That writes a 64x64 solid red PNG. Now run it through the proxy in verbose mode, substituting your target model from step 3, so the log records what the proxy actually did:
 
 ```bash
-ovp launch --target-model <target-model> --log-file /tmp/ovp-setup.log \
+ovp launch --target-model <target-model> -v --log-file /tmp/ovp-setup.log \
   -- -p "Use the Read tool on /tmp/ovp-red.png, then state in one short sentence what the image shows."
 ```
 
-Two results have to line up.
+It takes a minute or two the first time, because both models load cold. Verbose mode also spills the log onto the terminal; ignore that and read the file.
 
-The reply must describe a red image. A correct run looks like this, and takes a minute or two on first use because both models load cold:
+**Judge the run by the log, in this order.** What the model said is corroboration, not proof, for reasons below. On Windows, use `Select-String` in place of `grep`.
+
+**Check 1. Claude Code went through the proxy at all.**
+
+```bash
+grep -c 'POST /v1/messages' /tmp/ovp-setup.log
+```
+
+Expect 1 or more. A zero means `ANTHROPIC_BASE_URL` never reached the child process, and nothing below it means anything.
+
+**Check 2. The vision model actually answered, rather than failing quietly.**
+
+```bash
+grep -E "classified image as|transcription failed" /tmp/ovp-setup.log
+```
+
+Expect a classification line whose reply is not empty, and no failure line:
 
 ```
-I have read the image file. The image shows a solid block of red color with no visible text.
+DEBUG ollama_vision_proxy.vision: classified image as other (reply 'OTHER')
 ```
 
-And the log must show the transcription happening:
+An empty reply there means the vision model returned nothing and every image is quietly falling through to the generic path, which reads downstream exactly like a working setup.
+
+**Check 3. The image was replaced.**
 
 ```bash
 grep transcribed /tmp/ovp-setup.log
 ```
 
-```
-INFO ollama_vision_proxy.proxy: transcribed 1 image(s), skipped 0
-```
+Expect `transcribed 1 image(s), skipped 0`. Note that this count includes failed transcriptions, which is why check 2 comes first: on its own, this line cannot tell a real description from a fail-soft placeholder.
 
-**Check both, not just the first.** A reply that describes the image while the log shows no transcription means the target model read the image itself, which tells you it has `vision` and step 3 was answered wrong. The proof is not that the model described a red square; it is that a model which cannot see described a red square.
+### Why the model's reply is not the test
+
+All three of these were observed on the same machine within minutes, on a setup that was correctly wired the whole time:
+
+- `The image shows a solid block of vibrant red color filling the entire frame.` The good case.
+- `I am waiting for your next instruction.` A clean log, and a target model that simply did not follow the instruction. The setup is fine.
+- `The image shows a schematic diagram of a simple REST API flow...` for a plain red square. Here the model never called `Read`, so no image ever entered the request, no `transcribed` line appeared, and it invented an answer instead. Also not a proxy fault.
+
+So if checks 1 to 3 pass, the setup is proven regardless of the prose. If check 3 is missing, look at the reply before blaming the wiring: a model that never called `Read` produces no image to transcribe. Retry once, or use a stronger target model.
+
+One inverse case is worth catching: a reply that describes the image correctly while check 3 shows **nothing** means the target model read the image itself, so it has `vision` and step 3 was answered wrong.
 
 One line of startup output is expected and is not a fault:
 
@@ -164,7 +190,7 @@ Tell them three things:
 
 - Use `ovp launch` wherever they would have used `ollama launch claude`.
 - Anything after a bare `--` is passed to `claude` untouched, so `ovp launch --target-model <target-model> -- --agent manager` works.
-- The first image in a session takes roughly 20 to 40 seconds while the vision model loads. After that each distinct image costs one call, and an image already in the conversation history is not described again.
+- Each image costs one vision call, around 20 seconds for a screenshot with the default model, and the first one also pays the model's cold load. An image already sitting in the conversation history is not described again.
 
 Then stop. Do not attempt to redirect your own session.
 
@@ -187,4 +213,4 @@ A note on Windows: the code paths for it are written and unit-tested, but have n
 ## Where to look next
 
 - [README.md](README.md) for the full flag reference, the vision-model comparison, and what the proxy does to a request.
-- The `Options` table in the README for everything not used here, including `--no-geocode`, `--vision-context`, and `-v`.
+- The `Options` table in the README for everything not used here, including `--no-geocode`, `--vision-context`, and `--proxy-port`.
