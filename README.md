@@ -37,26 +37,28 @@ Each image block becomes a text block holding the description inside an `<image-
 - Ollama installed and running (`ollama serve`), reachable on `http://127.0.0.1:11434`
 - Claude Code, with `claude` on your `PATH`
 - One local vision-capable model (see below)
+- A target model that reports the `tools` capability (see below)
 
 ## Install
 
-Clone the repo, then install it.
-
-**macOS and Linux**
+Clone the repo, then install it into its own environment.
 
 ```bash
-git clone <repo-url> ollama-vision-proxy
+git clone https://github.com/paulocfjunior/ollama-vision-proxy.git
 cd ollama-vision-proxy
-python3 -m pip install -e .
+uv tool install .        # or: pipx install .
 ```
 
-**Windows (PowerShell)**
+If you have neither `uv` nor `pipx`, use a virtual environment:
 
-```powershell
-git clone <repo-url> ollama-vision-proxy
-cd ollama-vision-proxy
-py -m pip install -e .
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install .
 ```
+
+On Windows that is `py -m venv .venv` then `.venv\Scripts\python -m pip install .`, and `ovp` lands at `.venv\Scripts\ovp.exe`.
+
+Do not run `pip install` against a system Python. Homebrew and Debian both refuse it with `error: externally-managed-environment` (PEP 668), which is the interpreter protecting itself rather than a problem with this package.
 
 Both platforms run the same code. There are no native components, and the only runtime dependency is `httpx`.
 
@@ -65,6 +67,22 @@ Verify the install:
 ```bash
 ovp --version
 ```
+
+If `ovp` is not found, the install succeeded but its `bin` directory is not on `PATH`. Run `uv tool update-shell` or `pipx ensurepath` for the method you used, or, if you installed into a virtual environment, call it as `.venv/bin/ovp`.
+
+Handing this to someone else, or to an agent? [SETUP.md](SETUP.md) is a step-by-step runbook with a verification that proves the image path end to end.
+
+## Pick a target model
+
+The target model is the one Claude Code actually talks to, and it needs the `tools` capability. That is a separate requirement from vision, and it is the one that bites first:
+
+```bash
+ollama show <your-target-model>
+```
+
+A model without `tools` gets as far as your first turn and then fails inside Claude Code with `API Error: 400 ... does not support tools`, whatever else it can do. A model that reports both `tools` and `vision` works fine, but it can already see images, so you do not need this proxy for them. The shape worth having is `tools` present and `vision` absent.
+
+`ovp` does not check the target model at startup, only the vision model, so a name that is simply wrong also survives to the first turn and returns `HTTP 404 model "<name>" not found`.
 
 ## Pull a vision model
 
@@ -136,7 +154,7 @@ The same commands work verbatim in PowerShell.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--target-model` | required | The text-only model Claude Code talks to, for example `glm-5.2:cloud`. |
+| `--target-model` | required | The text-only model Claude Code talks to, for example `glm-5.2:cloud`. Must report the `tools` capability; not checked at startup. |
 | `--vision-model` | `gemma3:4b` | Local Ollama model used to describe images. |
 | `--proxy-port` | `11435` | Port the proxy listens on. |
 | `--upstream-url` | `http://127.0.0.1:11434` | The Ollama server to forward to. |
@@ -204,7 +222,7 @@ The block sits **outside** the `<image-transcription>` wrapper on purpose. Insid
 
 **Each image is transcribed once.** Descriptions are cached by SHA256 of the image data for the life of the proxy, so an image sitting in conversation history costs one vision call, not one per turn. Concurrent requests for the same image collapse into a single call.
 
-**Transcription never breaks your session.** If the vision model times out, is missing, or returns something unusable, the block becomes `[Image: transcription failed (reason)]` and the request still goes through. Turning a vision hiccup into a failed request would recreate the very bug this tool exists to fix.
+**Transcription never breaks your session.** If the vision model times out, is missing, or returns something unusable, the description becomes `transcription failed (reason)` inside the usual `<image-transcription>` wrapper, and the request still goes through. Turning a vision hiccup into a failed request would recreate the very bug this tool exists to fix.
 
 **Streaming is preserved.** Server-sent events are relayed as they arrive, so tokens appear while the model is still generating. Nothing is buffered.
 
@@ -239,6 +257,12 @@ uv pip install -e ".[dev]"
 **`Cannot listen on port 11435`** Something else has the port. Pass `--proxy-port`.
 
 **`Could not find the claude CLI on PATH`** Install Claude Code, or add it to `PATH`.
+
+**`API Error: 400 ... does not support tools`** The target model cannot drive Claude Code. Check it with `ollama show <model>` and pick one whose capabilities include `tools`.
+
+**`404 model "<x>" not found`** on the first turn. The `--target-model` name is wrong, or that model is not pulled.
+
+**`error: externally-managed-environment`** during install. `pip install` was run against a system Python. Use `uv tool install .`, `pipx install .`, or a virtual environment.
 
 **Images still rejected.** Confirm Claude Code is actually going through the proxy: run with `-v` and check for a `POST /v1/messages` log line on each turn. If nothing appears, `ANTHROPIC_BASE_URL` is not reaching the child process.
 
