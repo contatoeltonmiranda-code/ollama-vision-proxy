@@ -7,6 +7,8 @@ name = "ollama-vision-proxy"
 version = "0.1.0"
 description = "Give text-only Ollama models image support by transcribing images with a local vision model before forwarding"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.9"
 authors = [{ name = "Paulo Junior" }]
 keywords = ["ollama", "anthropic", "claude-code", "vision", "proxy"]
