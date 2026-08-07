@@ -60,7 +60,7 @@ On Windows that is `py -m venv .venv` then `.venv\Scripts\python -m pip install 
 
 Do not run `pip install` against a system Python. Homebrew and Debian both refuse it with `error: externally-managed-environment` (PEP 668), which is the interpreter protecting itself rather than a problem with this package.
 
-Both platforms run the same code. There are no native components, and the only runtime dependency is `httpx`.
+Both platforms run the same code. There are no native components, and the only runtime dependency is `httpx`. The Windows path has never actually been executed on Windows, though: see [Known limits](#known-limits).
 
 Verify the install:
 
@@ -146,7 +146,7 @@ ovp launch --target-model glm-5.2:cloud -- --agent manager
 ovp launch --target-model glm-5.2:cloud --vision-model minicpm-v --proxy-port 11500
 ```
 
-The same commands work verbatim in PowerShell.
+The same commands are written to work verbatim in PowerShell, with the caveat in [Known limits](#known-limits).
 
 `ovp` starts the proxy, spawns `claude` pointed at it, and shuts the proxy down when `claude` exits.
 
@@ -238,6 +238,18 @@ The block sits **outside** the `<image-transcription>` wrapper on purpose. Insid
 - Ollama is the only supported provider.
 - Install from a clone. Not published to PyPI.
 
+## Known limits
+
+Four things are worth knowing before you rely on this, because you will meet them eventually and they are all invisible while everything looks fine.
+
+**Windows has never been run on Windows.** The code is written for it and unit-tested for it, including the `.cmd` and `.bat` shim path in `build_claude_command`, but nobody has executed it on an actual Windows machine. If you are the first and something breaks, that is a bug here rather than a mistake of yours.
+
+**Two tests carry wall-clock assertions.** `test_sse_is_streamed_not_buffered` requires a first byte within 0.4s, and the client-disconnect tests sleep and then assert stderr is empty. They pass consistently on an idle machine and can flake on a loaded one. They are timing assertions, not logic, so a failure there is worth re-running before investigating.
+
+**EXIF parsing is JPEG-only.** It works because Claude Code re-encodes what you paste into JPEG, which was verified on the wire, but that is Claude Code's behaviour and not a contract it owes anyone. If it ever changes, the `<metadata>` block silently stops appearing. No test would catch that, because nothing here can tell "this image has no GPS" from "this image is no longer a JPEG".
+
+**`--vision-context` bounds prompt and output together.** At the default 8192, a very large screenshot can exhaust the window and truncate the transcription with no error, only a shorter description than you expected. Nothing asserts that the prompt and the reply fit inside it.
+
 ## Development
 
 ```bash
@@ -267,3 +279,7 @@ uv pip install -e ".[dev]"
 **Images still rejected.** Confirm Claude Code is actually going through the proxy: run with `-v` and check for a `POST /v1/messages` log line on each turn. If nothing appears, `ANTHROPIC_BASE_URL` is not reaching the child process.
 
 **Transcriptions are vague.** Try `--vision-model minicpm-v` for text-heavy screenshots, or a larger vision model.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
