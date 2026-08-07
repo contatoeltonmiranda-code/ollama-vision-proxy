@@ -20,6 +20,11 @@ dev = [
     "pytest>=7.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/paulocfjunior/ollama-vision-proxy"
+Repository = "https://github.com/paulocfjunior/ollama-vision-proxy.git"
+Issues = "https://github.com/paulocfjunior/ollama-vision-proxy/issues"
+
 [project.scripts]
 ovp = "ollama_vision_proxy.cli:main"
 
