@@ -2,8 +2,8 @@
 
 This is the Windows companion to [SETUP.md](../../SETUP.md). It covers the parts
 that are different on this platform, and the one thing you probably want at the
-end of it: a `cso` command that opens Claude Code against an Ollama model with
-image support, sitting beside your existing `cs` without disturbing it.
+end of it: a `cco` command that opens Claude Code against an Ollama model with
+image support, sitting beside your existing `claude` without disturbing it.
 
 Everything below was executed on Windows PowerShell 5.1 against Ollama 0.32.6,
 with `glm-5.2:cloud` as the target model and `gemma3:4b` for vision.
@@ -30,9 +30,9 @@ py -m venv .venv
 Expect `ovp 0.1.0`. Putting `.venv\Scripts` on `PATH` is optional: the wrapper in
 the next section finds that path on its own.
 
-## Wire up `cso`
+## Wire up `cco`
 
-[`scripts/cco.ps1`](../../scripts/cco.ps1) defines `cso`, plus the long form
+[`scripts/cco.ps1`](../../scripts/cco.ps1) defines `cco`, plus the long form
 `Invoke-ClaudeOllama` for when a default needs changing. Dot-source it from your
 profile:
 
@@ -46,13 +46,19 @@ Add one line, with the path to your clone:
 . "$HOME\ollama-vision-proxy\scripts\cco.ps1"
 ```
 
-Open a new terminal and run `cso`. The first launch checks Ollama, checks both
+Open a new terminal and run `cco`. The first launch checks Ollama, checks both
 models, and offers to pull anything missing.
 
 The defaults live in one array at the top of the script, so change them there
-rather than at the call site. It ships with `--dangerously-skip-permissions`, on
-the view that a local model is not worth approving tool by tool; if that is not
-your view, remove that one line.
+rather than at the call site. That array ships empty: an `--agent` or a
+`--channels` plugin is personal, and a default naming something that exists on
+one machine only would fail for everyone else.
+
+Tool approval is left on. Pass `--dangerously-skip-permissions` yourself when you
+want it, either straight through `cco` or as
+`Invoke-ClaudeOllama -SkipPermissions`. Routing to a local model is not on its
+own a reason to stop approving tool calls, and this file is loaded from a profile
+where a permanent default would be easy to forget.
 
 If dot-sourcing is refused with `running scripts is disabled on this system`,
 your execution policy is `Restricted`. Either relax it for your own account:
@@ -64,15 +70,15 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 or, if the clone came from a browser download rather than `git clone`, clear the
 mark of the web on the file: `Unblock-File scripts\cco.ps1`.
 
-## Why `cs` still works
+## Why `claude` still works
 
-`cso` never assigns `$env:ANTHROPIC_BASE_URL`. An assignment in a PowerShell
-session outlives the command that made it, so the next `cs` in that window would
-quietly go to Ollama instead of Anthropic, and nothing in its output would say
-so. Instead `ovp` builds the variable into the environment of the `claude`
-process it spawns, and that copy dies with the process.
+`cco` never assigns `$env:ANTHROPIC_BASE_URL`. An assignment in a PowerShell
+session outlives the command that made it, so the next plain `claude` in that
+window would quietly go to Ollama instead of Anthropic, and nothing in its
+output would say so. Instead `ovp` builds the variable into the environment of
+the `claude` process it spawns, and that copy dies with the process.
 
-The practical consequence: `cs` and `cso` can be run in the same window, in
+The practical consequence: `claude` and `cco` can be run in the same window, in
 either order, as often as you like.
 
 ## Undoing a redirect somebody else set
@@ -111,7 +117,7 @@ disabled. A key with an actual value is left alone.
 
 ## Several sessions at once
 
-Each `cso` asks the OS for a free port and tells its own `claude` about it, so
+Each `cco` asks the OS for a free port and tells its own `claude` about it, so
 sessions do not collide. Three run concurrently in three windows land on three
 consecutive ephemeral ports and answer independently.
 
@@ -190,7 +196,7 @@ consuming it, so `ovp launch --target-model glm-5.2:cloud -- --agent x` works as
 written. `cco.ps1` does not rely on that anyway: it builds one array and splats
 it, so each element becomes its own argv entry regardless of parser mode.
 
-**`cso -p "..."` is forwarded, not bound.** `cso` hands `$args` to
+**`cco -p "..."` is forwarded, not bound.** `cco` hands `$args` to
 `Invoke-ClaudeOllama` as an explicit `-ClaudeArgs` array. Splatting instead would
 let PowerShell try to bind a claude flag such as `-p` to a parameter of the
 wrapper, and `-p` is ambiguous against `-ProxyPort`.

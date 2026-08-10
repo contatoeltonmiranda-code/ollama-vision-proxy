@@ -268,7 +268,7 @@ uv pip install -e ".[dev]"
 .venv/bin/python -m pytest
 ```
 
-278 tests cover EXIF parsing (including truncated and hostile bytes), reverse geocoding, image-kind prompts, the metadata block, image detection and replacement (including nested `tool_result` images), cache and single-flight behaviour, fail-soft transcription, the launcher environment and signal handling, the CLI lifecycle, and full proxy round trips against a fake upstream, streaming and mid-stream failure included.
+279 tests cover EXIF parsing (including truncated and hostile bytes), reverse geocoding, image-kind prompts, the metadata block, image detection and replacement (including nested `tool_result` images), cache and single-flight behaviour, fail-soft transcription, the launcher environment and signal handling, the CLI lifecycle, and full proxy round trips against a fake upstream, streaming and mid-stream failure included.
 
 ## Troubleshooting
 

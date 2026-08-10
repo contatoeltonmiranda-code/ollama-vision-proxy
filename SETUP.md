@@ -214,4 +214,4 @@ A note on Windows: this runbook has been executed there, but the install, the ve
 
 - [README.md](README.md) for the full flag reference, the vision-model comparison, and what the proxy does to a request.
 - The `Options` table in the README for everything not used here, including `--no-geocode`, `--vision-context`, and `--proxy-port`.
-- [docs/how-to/powershell.md](docs/how-to/powershell.md) for the Windows version of this runbook, and a `cso` wrapper that fills in the flags.
+- [docs/how-to/powershell.md](docs/how-to/powershell.md) for the Windows version of this runbook, and a `cco` wrapper that fills in the flags.

@@ -4,54 +4,59 @@
     PowerShell front end for ollama-vision-proxy.
 
 .DESCRIPTION
-    Dot-source this file from your PowerShell profile to get `cso`: Claude Code
+    Dot-source this file from your PowerShell profile to get `cco`: Claude Code
     running against an Ollama model, with images transcribed by a local vision
     model on the way through.
 
         . "$HOME\ollama-vision-proxy\scripts\cco.ps1"
 
     Nothing here writes to the environment of your session. ANTHROPIC_BASE_URL
-    is set by ovp inside the child process only, so a plain `cs` in the same
+    is set by ovp inside the child process only, so a plain `claude` in the same
     window, or in any other window, still reaches Anthropic exactly as before.
     That is why this wraps `ovp launch` instead of assigning a few `$env:`
     variables: an assignment would leak to every later command in the session,
-    and `cs` would silently start talking to Ollama.
+    and `claude` would silently start talking to Ollama.
 
     Every invocation gets its own proxy on an OS-assigned port, so as many
     sessions as you like can run side by side. Pin -ProxyPort only if something
     outside the session has to reach the proxy, and never in two windows at once.
 
 .EXAMPLE
-    cso
-    Opens the sofia-gerente agent with vision support.
+    cco
+    Starts a session against the default target model, with vision support.
 
 .EXAMPLE
-    cso --resume
+    cco --resume
     Anything you pass is appended to the claude command line, after the
     defaults, so any claude flag works here.
 
 .EXAMPLE
     Invoke-ClaudeOllama -VisionModel qwen3-vl:4b -LogFile $env:TEMP\ovp.log
     The long form, for when a default needs changing.
+
+.EXAMPLE
+    Invoke-ClaudeOllama -SkipPermissions
+    Passes --dangerously-skip-permissions. Off by default: routing at a local
+    model is not on its own a reason to stop approving tool calls, and this
+    file is dot-sourced from a profile where that would be easy to forget.
 #>
 
-# The model Claude Code actually talks to. It must report the tools capability;
-# glm-5.2:cloud does, and carries a 1M context window, which is what makes the
-# opus[1m] alias below coherent.
+# The model Claude Code actually talks to. It must report the tools capability.
 $script:OvpTargetModel = 'glm-5.2:cloud'
 
 # The local model that describes images. Must report the vision capability.
 $script:OvpVisionModel = 'gemma3:4b'
 
-# The claude arguments cs uses, so cso is the same session plus vision.
-# --dangerously-skip-permissions is here because a local model is not worth
-# approving tool by tool; drop it from this array if that ever stops being true.
-$script:OvpClaudeArgs = @(
-    '--model', 'opus[1m]'
-    '--channels', 'plugin:telegram@claude-plugins-official'
-    '--agent', 'sofia-gerente'
-    '--dangerously-skip-permissions'
-)
+# Claude arguments added to every session started through this wrapper. Empty by
+# design: what belongs here is personal (an --agent, a --channels plugin, a
+# --model alias), and a default that names something only present on one machine
+# fails for everyone else. Add your own, they land before anything passed at the
+# call site.
+#
+# --model is deliberately absent rather than empty: ovp points all three of
+# claude's model aliases at the target model, so the default alias already
+# resolves there without naming it.
+$script:OvpClaudeArgs = @()
 
 $script:OvpUpstream = 'http://127.0.0.1:11434'
 
@@ -184,6 +189,14 @@ function Confirm-OvpModel {
 
     Write-Host "ovp: model '$Model' is not available locally." -ForegroundColor Yellow
     if (-not $Yes) {
+        # Only ask when there is someone to answer. ovp's own prompt checks
+        # stdin.isatty() first for the same reason: an unattended run (a
+        # scheduled task, CI, an agent) would otherwise block here forever
+        # rather than failing with a message someone can read later.
+        if (-not [Environment]::UserInteractive) {
+            Write-Host "ovp: not interactive, so not prompting. Run 'ollama pull $Model', or pass -Yes." -ForegroundColor Red
+            return $false
+        }
         $answer = Read-Host "ovp: run 'ollama pull $Model' now? [y/N]"
         if ($answer -notmatch '^(y|yes)$') {
             Write-Host "ovp: cannot continue without '$Model'." -ForegroundColor Red
@@ -213,6 +226,7 @@ function Invoke-ClaudeOllama {
         [string]$LogFile,
         [switch]$Yes,
         [switch]$Trace,
+        [switch]$SkipPermissions,
         [string[]]$ClaudeArgs = @()
     )
 
@@ -251,19 +265,28 @@ function Invoke-ClaudeOllama {
     if ($ProxyPort -gt 0) { $argv += @('--proxy-port', "$ProxyPort") }
     if ($LogFile)         { $argv += @('--log-file', $LogFile) }
     if ($Trace)           { $argv += '--verbose' }
-    $argv += '--'
-    $argv += $script:OvpClaudeArgs
-    if ($ClaudeArgs.Count -gt 0) { $argv += $ClaudeArgs }
+
+    # What claude receives, in order: the defaults from the top of this file,
+    # then -SkipPermissions if it was asked for, then whatever the call site
+    # passed. The bare -- goes in only when there is something to put after it.
+    $claudeSide = @($script:OvpClaudeArgs)
+    if ($SkipPermissions) { $claudeSide += '--dangerously-skip-permissions' }
+    if ($ClaudeArgs.Count -gt 0) { $claudeSide += $ClaudeArgs }
+    if ($claudeSide.Count -gt 0) {
+        $argv += '--'
+        $argv += $claudeSide
+    }
 
     & $ovp @argv
 }
 
 
-function cso {
+function cco {
     # The everyday entry point. Arguments are forwarded verbatim, so
-    # `cso --resume` and `cso -p "..."` both behave the way they would on the
-    # claude command line. Passing $args as an explicit array
-    # rather than splatting keeps PowerShell from binding a claude flag such as
-    # -p to a parameter of Invoke-ClaudeOllama.
+    # `cco --resume` and `cco -p "..."` both behave the way they would on the
+    # claude command line, and a claude flag this wrapper knows nothing about
+    # still reaches it. Passing $args as an explicit array rather than splatting
+    # keeps PowerShell from binding a claude flag such as -p to a parameter of
+    # Invoke-ClaudeOllama.
     Invoke-ClaudeOllama -ClaudeArgs $args
 }
