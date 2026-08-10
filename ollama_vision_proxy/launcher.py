@@ -55,11 +55,24 @@ def build_claude_command(
     claude_args: Sequence[str],
     is_windows: Optional[bool] = None,
 ) -> List[str]:
-    """Argv for spawning claude, handling Windows .cmd/.bat shims."""
+    r"""Argv for spawning claude, handling Windows .cmd/.bat shims.
+
+    CreateProcess cannot execute a .cmd or .bat, so npm's shim has to go through
+    cmd.exe. The `call` in front of it is not decoration: `cmd /c` strips the
+    first and last quote of the command line whenever the line *begins* with a
+    quote, so `cmd /c "C:\Program Files\...\claude.cmd" -p x` reaches the
+    interpreter as `C:\Program` followed by garbage. Any user whose claude sits
+    under a path containing a space -- "Program Files", or a profile named after
+    a person with two names -- hits this on the very first launch.
+
+    Starting the line with `call` means it no longer begins with a quote, so the
+    stripping rule never fires and the quoted path survives. `call` also
+    propagates the batch file's exit code, which is what `run_claude` returns.
+    """
     if is_windows is None:
         is_windows = os.name == "nt"
     if is_windows and Path(claude_path).suffix.lower() in WINDOWS_SHIM_SUFFIXES:
-        return ["cmd", "/c", claude_path, *claude_args]
+        return ["cmd", "/c", "call", claude_path, *claude_args]
     return [claude_path, *claude_args]
 
 

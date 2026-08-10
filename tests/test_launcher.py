@@ -170,13 +170,31 @@ class TestBuildClaudeCommand:
         from ollama_vision_proxy.launcher import build_claude_command
 
         command = build_claude_command(r"C:\npm\claude.cmd", ["-p"], is_windows=True)
-        assert command == ["cmd", "/c", r"C:\npm\claude.cmd", "-p"]
+        assert command == ["cmd", "/c", "call", r"C:\npm\claude.cmd", "-p"]
 
     def test_windows_bat_shim_is_run_through_cmd(self):
         from ollama_vision_proxy.launcher import build_claude_command
 
         command = build_claude_command(r"C:\npm\claude.bat", [], is_windows=True)
-        assert command == ["cmd", "/c", r"C:\npm\claude.bat"]
+        assert command == ["cmd", "/c", "call", r"C:\npm\claude.bat"]
+
+    def test_windows_shim_line_never_begins_with_a_quote(self):
+        """A path with a space is the whole reason `call` is there.
+
+        `cmd /c` strips the outer quotes of a command line that starts with one,
+        so without `call` a quoted path breaks apart at its first space and the
+        launch fails before claude is ever reached.
+        """
+        import subprocess
+
+        from ollama_vision_proxy.launcher import build_claude_command
+
+        command = build_claude_command(
+            r"C:\Program Files\npm\claude.cmd", ["-p", "hello"], is_windows=True
+        )
+        line = subprocess.list2cmdline(command[2:])
+        assert not line.startswith('"')
+        assert r'"C:\Program Files\npm\claude.cmd"' in line
 
     def test_no_args_is_fine(self):
         from ollama_vision_proxy.launcher import build_claude_command
