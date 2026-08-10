@@ -55,6 +55,60 @@ $script:OvpClaudeArgs = @(
 
 $script:OvpUpstream = 'http://127.0.0.1:11434'
 
+# Variables that redirect Claude Code away from Anthropic. `ollama launch claude`
+# sets these, and so does ovp, and a value inherited by the wrong process is
+# invisible: claude simply talks to a port that is not listening any more.
+$script:OvpRedirectVars = @(
+    'ANTHROPIC_BASE_URL'
+    'ANTHROPIC_AUTH_TOKEN'
+    'ANTHROPIC_DEFAULT_OPUS_MODEL'
+    'ANTHROPIC_DEFAULT_SONNET_MODEL'
+    'ANTHROPIC_DEFAULT_HAIKU_MODEL'
+    'CLAUDE_CODE_SUBAGENT_MODEL'
+)
+
+
+function Clear-ClaudeRedirect {
+    # Strip any inherited redirect so a plain `claude` reaches Anthropic.
+    #
+    # This exists because the variables outlive the thing that set them. A
+    # session started by `ollama launch claude` carries
+    # ANTHROPIC_BASE_URL=http://127.0.0.1:11434 in its own environment, and every
+    # terminal, script and claude opened from inside it inherits the value. Once
+    # that session is gone the port answers nothing, and the symptom is every
+    # later claude failing to connect, in windows that look unrelated. The same
+    # applies to a value written to the persistent User environment by any tool.
+    #
+    # A blank ANTHROPIC_API_KEY is cleared too. ovp sets it blank on purpose in
+    # its child, to neutralise an inherited real key; inherited one level
+    # further it only makes Claude Code announce that connectors are disabled.
+    # A key with an actual value is left alone, since that one may be deliberate.
+    [CmdletBinding()]
+    param([switch]$Quiet)
+
+    $cleared = @()
+
+    foreach ($name in $script:OvpRedirectVars) {
+        if (Test-Path "Env:$name") {
+            Remove-Item "Env:$name"
+            $cleared += $name
+        }
+        if ([Environment]::GetEnvironmentVariable($name, 'User')) {
+            [Environment]::SetEnvironmentVariable($name, $null, 'User')
+            $cleared += "$name (persistent)"
+        }
+    }
+
+    if ((Test-Path 'Env:ANTHROPIC_API_KEY') -and -not $env:ANTHROPIC_API_KEY) {
+        Remove-Item 'Env:ANTHROPIC_API_KEY'
+        $cleared += 'ANTHROPIC_API_KEY (blank)'
+    }
+
+    if ($cleared.Count -and -not $Quiet) {
+        Write-Host "ovp: cleared an inherited redirect: $($cleared -join ', ')" -ForegroundColor DarkGray
+    }
+    return $cleared
+}
 
 function Find-OvpCommand {
     # Locate the ovp executable. PATH first, then the two places an install from
@@ -161,6 +215,10 @@ function Invoke-ClaudeOllama {
         [switch]$Trace,
         [string[]]$ClaudeArgs = @()
     )
+
+    # A stale redirect in this session would not break ovp, but it would break
+    # the next plain claude run in the same window. Clear it while we are here.
+    $null = Clear-ClaudeRedirect -Quiet
 
     $ovp = Find-OvpCommand
     if (-not $ovp) {

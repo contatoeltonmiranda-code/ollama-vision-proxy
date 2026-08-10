@@ -75,6 +75,40 @@ process it spawns, and that copy dies with the process.
 The practical consequence: `cs` and `cso` can be run in the same window, in
 either order, as often as you like.
 
+## Undoing a redirect somebody else set
+
+Not assigning the variable is only half of it, because the variable can already
+be there when your shell starts. `ollama launch claude` puts
+`ANTHROPIC_BASE_URL=http://127.0.0.1:11434` into its own environment, and every
+terminal, script and `claude` opened from inside that session inherits it. When
+the session ends, nothing listens on that port any more, and the symptom is
+every later `claude` failing to connect, in windows that look unrelated to it.
+The same happens if any tool writes the variable to the persistent User
+environment, where it then outlives reboots.
+
+`Clear-ClaudeRedirect` removes both copies: the one in this session and the one
+in the User environment. Call it once when your profile loads and the
+inheritance chain stops at the first new shell:
+
+```powershell
+. "$HOME\ollama-vision-proxy\scripts\cco.ps1"
+$null = Clear-ClaudeRedirect -Quiet
+
+function cs {
+    $null = Clear-ClaudeRedirect -Quiet
+    claude @args
+}
+```
+
+Repeating the call inside `cs` covers the case where something set the variable
+after the profile had already run. `Invoke-ClaudeOllama` calls it too, so a
+proxied session never inherits a stale redirect either.
+
+A blank `ANTHROPIC_API_KEY` is cleared as well. `ovp` sets it blank on purpose
+in its child so an inherited real key cannot be used by accident; inherited one
+level further it does nothing but make Claude Code announce that connectors are
+disabled. A key with an actual value is left alone.
+
 ## Several sessions at once
 
 Each `cso` asks the OS for a free port and tells its own `claude` about it, so
