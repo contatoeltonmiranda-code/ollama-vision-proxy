@@ -100,15 +100,20 @@ inheritance chain stops at the first new shell:
 . "$HOME\ollama-vision-proxy\scripts\cco.ps1"
 $null = Clear-ClaudeRedirect -Quiet
 
-function cs {
+function Invoke-ClaudeDirect {
     $null = Clear-ClaudeRedirect -Quiet
     claude @args
 }
+Set-Alias cs Invoke-ClaudeDirect   # or whatever you call plain claude
 ```
 
-Repeating the call inside `cs` covers the case where something set the variable
-after the profile had already run. `Invoke-ClaudeOllama` calls it too, so a
-proxied session never inherits a stale redirect either.
+Repeating the call inside the wrapper covers the case where something set the
+variable after the profile had already run. `Invoke-ClaudeOllama` calls it too,
+so a proxied session never inherits a stale redirect either.
+
+Name that wrapper anything except `claude`. A PowerShell function shadows the
+native command, so a function called `claude` that runs `claude @args` calls
+itself until the session gives up.
 
 A blank `ANTHROPIC_API_KEY` is cleared as well. `ovp` sets it blank on purpose
 in its child so an inherited real key cannot be used by accident; inherited one
