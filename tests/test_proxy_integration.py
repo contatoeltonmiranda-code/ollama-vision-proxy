@@ -609,6 +609,24 @@ class TestLifecycle:
         finally:
             server.stop()
 
+    def test_two_default_proxies_coexist_on_different_ports(self, upstream):
+        # The regression this guards: a fixed default port let the first session
+        # bind and made every later concurrent one die on "Address already in
+        # use". Neither is given a port, so this exercises the default.
+        first = ProxyServer(upstream_url=upstream.url, transcriber=lambda block: "x")
+        second = ProxyServer(upstream_url=upstream.url, transcriber=lambda block: "x")
+        first.start()
+        try:
+            second.start()
+            try:
+                assert first.port > 0
+                assert second.port > 0
+                assert first.port != second.port
+            finally:
+                second.stop()
+        finally:
+            first.stop()
+
     def test_stop_releases_the_port(self, upstream):
         server = ProxyServer(
             port=0, upstream_url=upstream.url, transcriber=lambda block: "x"

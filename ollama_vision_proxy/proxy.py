@@ -26,7 +26,11 @@ from .transform import Transcriber, has_images, transform_request
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PROXY_PORT = 11435
+#: Bind port 0 and the OS hands out a free one. This is the default because the
+#: proxy is private to one session: only the `claude` it spawns talks to it, and
+#: that child is told the port through its environment. A fixed port would buy
+#: nothing and would stop a second concurrent session from starting at all.
+EPHEMERAL_PORT = 0
 DEFAULT_UPSTREAM_URL = "http://127.0.0.1:11434"
 
 MESSAGES_PATH = "/v1/messages"
@@ -86,7 +90,7 @@ class ProxyServer:
 
     def __init__(
         self,
-        port: int = DEFAULT_PROXY_PORT,
+        port: int = EPHEMERAL_PORT,
         upstream_url: str = DEFAULT_UPSTREAM_URL,
         transcriber: Optional[Transcriber] = None,
         host: str = "127.0.0.1",

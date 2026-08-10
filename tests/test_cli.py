@@ -85,6 +85,16 @@ class TestSuccessfulLaunch:
         cli.main(["launch", "--target-model", "glm-5.2:cloud", "--proxy-port", "12345"])
         assert wired["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:12345"
 
+    def test_an_ephemeral_port_is_requested_by_default(self, wired):
+        # A fixed default would make a second concurrent session fail to bind.
+        cli.main(["launch", "--target-model", "m"])
+        assert FakeProxy.instances[0].requested_port == 0
+
+    def test_claude_is_pointed_at_the_port_the_os_chose(self, wired):
+        # The env has to carry the bound port, not the requested 0.
+        cli.main(["launch", "--target-model", "m"])
+        assert wired["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:55555"
+
     def test_target_model_reaches_the_env(self, wired):
         cli.main(["launch", "--target-model", "glm-5.2:cloud"])
         assert wired["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "glm-5.2:cloud"
@@ -146,12 +156,27 @@ class TestPortInUse:
         cli.main(["launch", "--target-model", "m"])
         assert FakeTranscriber.instances[0].closed is True
 
-    def test_bind_failure_message_suggests_another_port(self, wired, monkeypatch, capsys):
+    def test_pinned_port_failure_names_the_port_and_the_way_out(
+        self, wired, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(
+            FakeProxy, "start", lambda self: (_ for _ in ()).throw(OSError(48, "in use"))
+        )
+        cli.main(["launch", "--target-model", "m", "--proxy-port", "11435"])
+        error = capsys.readouterr().err
+        assert "11435" in error
+        assert "--proxy-port" in error
+
+    def test_ephemeral_port_failure_does_not_suggest_another_port(
+        self, wired, monkeypatch, capsys
+    ):
+        # Nothing was pinned, so the OS chose the port and telling the user to
+        # pick a different one would send them after the wrong problem.
         monkeypatch.setattr(
             FakeProxy, "start", lambda self: (_ for _ in ()).throw(OSError(48, "in use"))
         )
         cli.main(["launch", "--target-model", "m"])
-        assert "--proxy-port" in capsys.readouterr().err
+        assert "--proxy-port" not in capsys.readouterr().err
 
     def test_child_is_never_spawned_when_the_bind_fails(self, wired, monkeypatch):
         monkeypatch.setattr(

@@ -201,7 +201,7 @@ Then stop. Do not attempt to redirect your own session.
 | `Cannot reach the Ollama server at <url>` | `ollama serve` is not running, or `--upstream-url` points at the wrong place. |
 | `The model '<x>' is pulled but does not support vision` | Wrong model in `--vision-model`. The message lists the vision-capable models already pulled. |
 | `The vision model '<x>' is not available in Ollama` | Not pulled. `ollama pull <x>`, or let `ovp launch` offer. |
-| `Cannot listen on port 11435` | Another process holds the port. Pass `--proxy-port`. |
+| `Cannot listen on port <n>` | You pinned `--proxy-port` and another process holds that port. Drop the flag and the OS picks a free one. |
 | Could not find the `claude` CLI on PATH | Claude Code is not installed, or not on `PATH`. |
 | `does not support tools` | The target model cannot drive Claude Code. Go back to step 3. |
 | `404 model "<x>" not found` | The target model name is wrong or not pulled. Check with `ollama show <x>`. |

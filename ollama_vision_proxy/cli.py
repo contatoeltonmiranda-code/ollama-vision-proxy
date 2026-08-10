@@ -22,7 +22,7 @@ from .preflight import (
     pull_model,
     vision_model_status,
 )
-from .proxy import DEFAULT_PROXY_PORT, DEFAULT_UPSTREAM_URL, ProxyServer
+from .proxy import DEFAULT_UPSTREAM_URL, EPHEMERAL_PORT, ProxyServer
 from .vision import (
     DEFAULT_NUM_CTX,
     DEFAULT_TIMEOUT,
@@ -72,8 +72,10 @@ def _add_launch_arguments(launch: argparse.ArgumentParser) -> None:
     launch.add_argument(
         "--proxy-port",
         type=int,
-        default=DEFAULT_PROXY_PORT,
-        help=f"port for this proxy to listen on (default: {DEFAULT_PROXY_PORT})",
+        default=EPHEMERAL_PORT,
+        help="port for this proxy to listen on. The default asks the OS for a "
+        "free one, so any number of sessions can run side by side; pin it only "
+        "if something else has to reach the proxy",
     )
     launch.add_argument(
         "--upstream-url",
@@ -161,10 +163,7 @@ def _launch(args: argparse.Namespace, claude_args: List[str]) -> int:
         proxy.start()
     except OSError as exc:
         transcriber.close()
-        raise PreflightError(
-            f"Cannot listen on port {args.proxy_port} ({exc}). Another process "
-            "may already be using it; pass --proxy-port to pick another."
-        ) from exc
+        raise PreflightError(_bind_failure_message(args.proxy_port, exc)) from exc
 
     try:
         logger.info(
@@ -187,6 +186,22 @@ def _launch(args: argparse.Namespace, claude_args: List[str]) -> int:
             transcriber.cache.hits,
             transcriber.cache.misses,
         )
+
+
+def _bind_failure_message(port: int, exc: OSError) -> str:
+    """Why the proxy could not listen, and what the caller can do about it.
+
+    On the default ephemeral port the OS picks something free, so a failure there
+    is not a clash and suggesting another port would be misleading. A clash is
+    only possible once a port has been pinned.
+    """
+    if port == EPHEMERAL_PORT:
+        return f"Cannot open a listening socket ({exc})."
+    return (
+        f"Cannot listen on port {port} ({exc}). Another process may already be "
+        "using it. Drop --proxy-port to let the OS pick a free port, or pass a "
+        "different one."
+    )
 
 
 def _build_pipeline(args: argparse.Namespace):

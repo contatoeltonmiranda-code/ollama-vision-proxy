@@ -21,7 +21,7 @@ This is emitted by Ollama's own multimodal check, not by a specific backend, so 
 Claude Code
     |  POST /v1/messages   (contains image blocks)
     v
-ovp proxy  127.0.0.1:11435
+ovp proxy  127.0.0.1:<free port chosen at startup>
     |  POST /api/chat      (local vision model describes each image)
     |<---------------------------------------------
     |  POST /v1/messages   (text-only, images replaced by their descriptions)
@@ -142,7 +142,7 @@ ovp launch --target-model glm-5.2:cloud
 # Pass arguments through to claude
 ovp launch --target-model glm-5.2:cloud -- --agent manager
 
-# A different vision model and port
+# A different vision model, and a pinned port instead of an OS-chosen one
 ovp launch --target-model glm-5.2:cloud --vision-model minicpm-v --proxy-port 11500
 ```
 
@@ -150,13 +150,21 @@ The same commands are written to work verbatim in PowerShell, with the caveat in
 
 `ovp` starts the proxy, spawns `claude` pointed at it, and shuts the proxy down when `claude` exits.
 
+### Several sessions at once
+
+Run `ovp launch` as many times as you like, in as many terminals as you like. Each one gets its own proxy on its own OS-assigned port and tells its own `claude` where to find it, so the sessions never contend for a port.
+
+What they do share is the Ollama server, and therefore the resident models. That is the good part: a second session adds another small proxy process, not another copy of the target model or the vision model. It is also where the real limit lives, since how much genuine concurrency one model gives you is decided by the Ollama server's own settings, not by anything `ovp` does.
+
+Pinning `--proxy-port` opts out of all of this. Two sessions given the same fixed port will collide, and the second will fail to start.
+
 ### Options
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--target-model` | required | The text-only model Claude Code talks to, for example `glm-5.2:cloud`. Must report the `tools` capability; not checked at startup. |
 | `--vision-model` | `gemma3:4b` | Local Ollama model used to describe images. |
-| `--proxy-port` | `11435` | Port the proxy listens on. |
+| `--proxy-port` | a free port | Port the proxy listens on. The default asks the OS for an unused one, which is what lets sessions run side by side; pin it only if something else has to reach the proxy. |
 | `--upstream-url` | `http://127.0.0.1:11434` | The Ollama server to forward to. |
 | `--vision-timeout` | `180` | Seconds to wait for one transcription. |
 | `--vision-context` | `8192` | Context window for the vision model. Pinned so a large `OLLAMA_CONTEXT_LENGTH` cannot reserve tens of GB per image. |
@@ -258,7 +266,7 @@ uv pip install -e ".[dev]"
 .venv/bin/python -m pytest
 ```
 
-274 tests cover EXIF parsing (including truncated and hostile bytes), reverse geocoding, image-kind prompts, the metadata block, image detection and replacement (including nested `tool_result` images), cache and single-flight behaviour, fail-soft transcription, the launcher environment and signal handling, the CLI lifecycle, and full proxy round trips against a fake upstream, streaming and mid-stream failure included.
+278 tests cover EXIF parsing (including truncated and hostile bytes), reverse geocoding, image-kind prompts, the metadata block, image detection and replacement (including nested `tool_result` images), cache and single-flight behaviour, fail-soft transcription, the launcher environment and signal handling, the CLI lifecycle, and full proxy round trips against a fake upstream, streaming and mid-stream failure included.
 
 ## Troubleshooting
 
@@ -266,7 +274,7 @@ uv pip install -e ".[dev]"
 
 **`The model '<x>' is pulled but does not support vision`** That model has no vision capability. The error lists the vision-capable models you already have.
 
-**`Cannot listen on port 11435`** Something else has the port. Pass `--proxy-port`.
+**`Cannot listen on port <n>`** Only happens when you pinned `--proxy-port` and something else holds that port, often another session pinned to the same one. Drop the flag and the OS will pick a free port.
 
 **`Could not find the claude CLI on PATH`** Install Claude Code, or add it to `PATH`.
 
