@@ -146,7 +146,7 @@ ovp launch --target-model glm-5.2:cloud -- --agent manager
 ovp launch --target-model glm-5.2:cloud --vision-model minicpm-v --proxy-port 11500
 ```
 
-The same commands are written to work verbatim in PowerShell, with the caveat in [Known limits](#known-limits).
+The same commands are written to work verbatim in PowerShell, with the caveat in [Known limits](#known-limits). On PowerShell, `scripts/cco.ps1` wraps all of this in one `cco` command that picks the bridge from the model's own capabilities; see [How to launch Claude Code from PowerShell](docs/how-to/powershell.md).
 
 `ovp` starts the proxy, spawns `claude` pointed at it, and shuts the proxy down when `claude` exits.
 
