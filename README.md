@@ -60,7 +60,7 @@ On Windows that is `py -m venv .venv` then `.venv\Scripts\python -m pip install 
 
 Do not run `pip install` against a system Python. Homebrew and Debian both refuse it with `error: externally-managed-environment` (PEP 668), which is the interpreter protecting itself rather than a problem with this package.
 
-Both platforms run the same code. There are no native components, and the only runtime dependency is `httpx`. The Windows path has never actually been executed on Windows, though: see [Known limits](#known-limits).
+Both platforms run the same code. There are no native components, and the only runtime dependency is `httpx`. Windows has its own runbook, since the install, the verification and the shell wrapper all differ there: [docs/how-to/powershell.md](docs/how-to/powershell.md).
 
 Verify the install:
 
@@ -71,6 +71,8 @@ ovp --version
 If `ovp` is not found, the install succeeded but its `bin` directory is not on `PATH`. Run `uv tool update-shell` or `pipx ensurepath` for the method you used, or, if you installed into a virtual environment, call it as `.venv/bin/ovp`.
 
 Handing this to someone else, or to an agent? [SETUP.md](SETUP.md) is a step-by-step runbook with a verification that proves the image path end to end.
+
+On Windows, [docs/how-to/powershell.md](docs/how-to/powershell.md) is that runbook in PowerShell, and adds a profile wrapper so one word starts a session.
 
 ## Pick a target model
 
@@ -146,7 +148,7 @@ ovp launch --target-model glm-5.2:cloud -- --agent manager
 ovp launch --target-model glm-5.2:cloud --vision-model minicpm-v --proxy-port 11500
 ```
 
-The same commands are written to work verbatim in PowerShell, with the caveat in [Known limits](#known-limits).
+These commands work verbatim in PowerShell too; a bare `--` is passed through to a native command rather than consumed. [docs/how-to/powershell.md](docs/how-to/powershell.md) adds a `cso` wrapper that fills in the flags, checks both models, and leaves your existing `claude` alias untouched.
 
 `ovp` starts the proxy, spawns `claude` pointed at it, and shuts the proxy down when `claude` exits.
 
@@ -250,7 +252,7 @@ The block sits **outside** the `<image-transcription>` wrapper on purpose. Insid
 
 Four things are worth knowing before you rely on this, because you will meet them eventually and they are all invisible while everything looks fine.
 
-**Windows has never been run on Windows.** The code is written for it and unit-tested for it, including the `.cmd` and `.bat` shim path in `build_claude_command`, but nobody has executed it on an actual Windows machine. If you are the first and something breaks, that is a bug here rather than a mistake of yours.
+**`cmd` expands `%VAR%` in your arguments on Windows.** An npm-installed `claude` is a `.cmd`, which CreateProcess cannot run, so it goes through `cmd.exe` and `cmd` substitutes anything that looks like a variable reference before `claude` sees it. A `-p` prompt containing `%USERNAME%` arrives with the value in place; a lone `%` is fine. No `cmd` switch turns this off.
 
 **Two tests carry wall-clock assertions.** `test_sse_is_streamed_not_buffered` requires a first byte within 0.4s, and the client-disconnect tests sleep and then assert stderr is empty. They pass consistently on an idle machine and can flake on a loaded one. They are timing assertions, not logic, so a failure there is worth re-running before investigating.
 

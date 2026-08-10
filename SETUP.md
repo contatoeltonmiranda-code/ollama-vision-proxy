@@ -208,9 +208,10 @@ Then stop. Do not attempt to redirect your own session.
 | `error: externally-managed-environment` | `pip install` was run outside a virtual environment. Go back to step 5. |
 | `transcription failed (...)` inside an `<image-transcription>` block | The session is fine and the request went through; only that one description failed. Raise `--vision-timeout`, or check the log. |
 
-A note on Windows: the code paths for it are written and unit-tested, but have never been executed on Windows by anyone. If you are the first, treat an unexpected failure there as a likely bug in this repo rather than a mistake of yours.
+A note on Windows: this runbook has been executed there, but the install, the verification commands and the shell wrapper all differ enough to be worth their own page. Follow [docs/how-to/powershell.md](docs/how-to/powershell.md) instead of translating the steps above.
 
 ## Where to look next
 
 - [README.md](README.md) for the full flag reference, the vision-model comparison, and what the proxy does to a request.
 - The `Options` table in the README for everything not used here, including `--no-geocode`, `--vision-context`, and `--proxy-port`.
+- [docs/how-to/powershell.md](docs/how-to/powershell.md) for the Windows version of this runbook, and a `cso` wrapper that fills in the flags.
