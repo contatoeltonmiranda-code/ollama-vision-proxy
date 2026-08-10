@@ -148,7 +148,7 @@ ovp launch --target-model glm-5.2:cloud -- --agent manager
 ovp launch --target-model glm-5.2:cloud --vision-model minicpm-v --proxy-port 11500
 ```
 
-These commands work verbatim in PowerShell too; a bare `--` is passed through to a native command rather than consumed. [docs/how-to/powershell.md](docs/how-to/powershell.md) adds a `cso` wrapper that fills in the flags, checks both models, and leaves your existing `claude` alias untouched.
+These commands work verbatim in PowerShell too; a bare `--` is passed through to a native command rather than consumed. [docs/how-to/powershell.md](docs/how-to/powershell.md) adds a `cco` wrapper that fills in the flags, checks both models, and leaves your existing `claude` alias untouched.
 
 `ovp` starts the proxy, spawns `claude` pointed at it, and shuts the proxy down when `claude` exits.
 
