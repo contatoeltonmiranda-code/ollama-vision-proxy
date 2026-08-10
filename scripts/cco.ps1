@@ -26,8 +26,9 @@
     Opens the sofia-gerente agent with vision support.
 
 .EXAMPLE
-    cso --dangerously-skip-permissions
-    Anything you pass is appended to the claude command line.
+    cso --resume
+    Anything you pass is appended to the claude command line, after the
+    defaults, so any claude flag works here.
 
 .EXAMPLE
     Invoke-ClaudeOllama -VisionModel qwen3-vl:4b -LogFile $env:TEMP\ovp.log
@@ -43,10 +44,13 @@ $script:OvpTargetModel = 'glm-5.2:cloud'
 $script:OvpVisionModel = 'gemma3:4b'
 
 # The claude arguments cs uses, so cso is the same session plus vision.
+# --dangerously-skip-permissions is here because a local model is not worth
+# approving tool by tool; drop it from this array if that ever stops being true.
 $script:OvpClaudeArgs = @(
     '--model', 'opus[1m]'
     '--channels', 'plugin:telegram@claude-plugins-official'
     '--agent', 'sofia-gerente'
+    '--dangerously-skip-permissions'
 )
 
 $script:OvpUpstream = 'http://127.0.0.1:11434'
@@ -199,8 +203,8 @@ function Invoke-ClaudeOllama {
 
 function cso {
     # The everyday entry point. Arguments are forwarded verbatim, so
-    # `cso --dangerously-skip-permissions` and `cso -p "..."` both behave the way
-    # they would on the claude command line. Passing $args as an explicit array
+    # `cso --resume` and `cso -p "..."` both behave the way they would on the
+    # claude command line. Passing $args as an explicit array
     # rather than splatting keeps PowerShell from binding a claude flag such as
     # -p to a parameter of Invoke-ClaudeOllama.
     Invoke-ClaudeOllama -ClaudeArgs $args

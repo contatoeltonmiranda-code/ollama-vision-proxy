@@ -49,6 +49,11 @@ Add one line, with the path to your clone:
 Open a new terminal and run `cso`. The first launch checks Ollama, checks both
 models, and offers to pull anything missing.
 
+The defaults live in one array at the top of the script, so change them there
+rather than at the call site. It ships with `--dangerously-skip-permissions`, on
+the view that a local model is not worth approving tool by tool; if that is not
+your view, remove that one line.
+
 If dot-sourcing is refused with `running scripts is disabled on this system`,
 your execution policy is `Restricted`. Either relax it for your own account:
 
@@ -97,7 +102,6 @@ what happened:
 ```powershell
 $log = "$env:TEMP\ovp-setup.log"
 Invoke-ClaudeOllama -Trace -LogFile $log -ClaudeArgs @(
-    '--dangerously-skip-permissions'
     '-p', "Use the Read tool on $env:TEMP\ovp-red.png, then state in one short sentence what the image shows."
 )
 ```
